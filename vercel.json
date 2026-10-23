@@ -1,8 +1,7 @@
 {
   "version": 2,
-  "public": true,
   "rewrites": [
-    { "source": "/", "destination": "/web/index.html" },
+    { "source": "/api/(.*)", "destination": "/api/index.py" },
     { "source": "/manifest.json", "destination": "/web/manifest.json" },
     { "source": "/(.*)", "destination": "/web/$1" }
   ]
