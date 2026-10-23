@@ -1,26 +1,24 @@
 /**
  * ============================================================================
- * 智慧 AI 記帳系統 - LINE Official Account × Gemini API × Google Sheets
+ * 極簡智慧 AI 記帳系統 - LINE 圖文選單觸發 × Gemini API × Google Sheets
  * ============================================================================
  * 核心特點：
- * 1. 資料零遺失 (Zero-Data-Loss)：
- *    - 收到 LINE 文字或圖片時，第一時間透過 LockService 寫入 `RawLogs` 原始紀錄表
- *    - 圖片自動備份至 Google Drive 指定資料夾，並在試算表保留永久預覽連結
- *    - 若 Gemini API 暫時連線異常，紀錄標記為 FAILED，支援一鍵/排程自動重試
- * 2. 智慧多筆解析 (Gemini 3.8 Flash Structured Output)：
- *    - 單則文字（如「早餐45 咖啡65 捷運30」）或單張發票/收據照片自動拆分為多筆結構化明細
- * 3. LINE 互動確認小卡 (Flex Message + Postback + Quick Reply)：
- *    - 記帳完成回傳精美收據卡片，支援點擊「撤銷此筆」、輸入「修改上一筆」或觸發 AI 診斷
- * 4. 獨立視覺化網頁儀表板 & AI 財務診斷中心 (Gemini 4 Argon / 3.8 Flash)：
- *    - 支援透過 GAS Web App 網址直接開啟，或由外部獨立網頁 (`web/index.html`) 透過 API 串接
+ * 1. LINE 圖文選單 (Rich Menu) 點選觸發記帳流程：
+ *    - 預設「直接傳送訊息不會自動觸發記帳」，必須先點選圖文選單【✍️ 點選記帳】或【📸 收據記帳】
+ *      才會啟動單次記帳流程（或點選確認按鈕後才觸發），徹底杜絕日常對話誤觸！
+ *    - 圖文選單內建【📱 手機版查帳】按鈕，一鍵開啟 GitHub Pages 手機版網頁檢視帳務。
+ * 2. 100% Google Sheets 雲端儲存與跨裝置同步：
+ *    - 所有帳務明細 (`Transactions`)、原始防漏紀錄 (`RawLogs`)、分類預算 (`Budgets`)、
+ *      細部設定 (`Settings`) 與 AI 診斷報告 (`AI_Reports`) 皆儲存於 Google Sheets。
+ *    - 手機、平板、電腦打開 GitHub Pages 網頁皆即時從 Google Sheets 提取最新資料與設定。
  * ============================================================================
  */
 
-// 預設模型設定（遵循最新 Gemini API Interactions 規範）
 const DEFAULT_PARSE_MODEL = 'gemini-3.8-flash';
 const DEFAULT_DIAGNOSIS_MODEL = 'gemini-4-argon';
 const GEMINI_INTERACTIONS_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/interactions';
 const GEMINI_API_REVISION = '2026-05-20';
+const DEFAULT_GITHUB_PAGES_URL = 'https://emma1426.github.io/Accounting-book/';
 
 // 工作表名稱常數
 const SHEET_TRANSACTIONS = 'Transactions';
@@ -53,28 +51,23 @@ const INCOME_CATEGORIES = [
   '其他收入'
 ];
 
-// 預設最細子分類樹狀結構 (主分類 -> 精細子分類清單)，支援每月由 Gemini 自動校準擴充
+// 預設最細子分類樹狀結構
 const DEFAULT_SUBCATEGORY_TAXONOMY = {
-  '餐飲食品': ['平日三餐便當', '餐廳聚餐外食', '精品與超商咖啡', '手搖飲與果茶', '早餐輕食', '生鮮食材水果', '甜點零食宵夜'],
-  '交通通勤': ['大眾運輸月票', '捷運與公車', '計程車與Uber', '高鐵與台鐵', '汽機車加油充電', '停車與過路費', '共享單車機車'],
-  '日常用品': ['超市量販採買', '居家清潔消耗品', '個人洗沐護理', '五金百貨雜貨', '寵物用品'],
-  '居家帳單': ['房屋租金或房貸', '水電瓦斯費', '行動電信費', '家用寬頻固網', '物業管理費', '家電家具維修'],
-  '休閒娛樂': ['電影與藝文展演', '朋友聚會小酌', '國內外旅遊住宿', '遊戲與數位娛樂', '運動戶外休閒'],
-  '服飾美容': ['服裝穿搭鞋包', '理髮染燙造型', '美妝保養品', '美甲美睫SPA'],
-  '醫療保健': ['診所醫院門診', '藥局常備藥品', '日常保健食品', '牙科與眼科', '健檢與保險'],
-  '學習進修': ['專業書籍雜誌', '線上課程講座', '語言與技能培訓', '證照檢定考試'],
-  '數位訂閱': ['AI生產力工具', '影音音樂串流', '雲端硬碟空間', 'App與軟體授權'],
-  '人情社交': ['婚喪喜慶禮金', '節慶伴手禮', '請客聚餐社交', '孝親與家庭紅包'],
-  '其他支出': ['臨時未分類雜支', '跨行手續費與稅費', '公益捐款']
+  '餐飲食品': ['早餐', '午餐', '晚餐', '手搖飲', '咖啡下午茶', '便利商店', '生鮮食材', '朋友聚餐', '宵夜點心'],
+  '交通通勤': ['捷運公車', '高鐵台鐵', '計程車Uber', '加油充電', '停車過路費', '共享運具', '保養維修'],
+  '日常用品': ['超市量販', '居家清潔', '個人洗沐', '五金雜貨', '寵物用品', '網購日用'],
+  '居家帳單': ['房租房貸', '水電瓦斯', '手機電信', '家用網路', '物業管理費', '家電維修'],
+  '休閒娛樂': ['電影展演', '朋友小酌', '國內外旅遊', '遊戲娛樂', '運動健身'],
+  '服飾美容': ['服裝鞋包', '理髮造型', '美妝保養', '美甲SPA'],
+  '醫療保健': ['診所門診', '藥局買藥', '保健食品', '牙科眼科', '健檢保險'],
+  '學習進修': ['書籍雜誌', '線上課程', '技能培訓', '證照考試'],
+  '數位訂閱': ['AI工具', '影音串流', '雲端空間', 'App授權'],
+  '人情社交': ['紅包禮金', '伴手禮', '請客聚餐', '孝親家用'],
+  '其他支出': ['臨時雜支', '手續費稅費', '公益捐款']
 };
 
 /**
  * 讀取系統設定（從指令碼屬性 Script Properties 讀取）
- * 請在 GAS 編輯器左側「專案設定 ⚙️」->「指令碼屬性」新增：
- * - LINE_CHANNEL_ACCESS_TOKEN : LINE 官方帳號的 Channel Access Token
- * - GEMINI_API_KEY            : Google AI Studio 的 Gemini API Key
- * - DRIVE_FOLDER_ID           : (選填) 儲存收據照片的 Google Drive 資料夾 ID，未填會自動建立
- * - DASHBOARD_ACCESS_TOKEN    : (選填) 網頁儀表板安全通行碼
  */
 function getConfig() {
   const props = PropertiesService.getScriptProperties().getProperties();
@@ -90,8 +83,28 @@ function getConfig() {
 }
 
 /**
+ * 取得手機版檢視帳務網頁連結（自動附加 gas_url 讓手機免設定直連 Google Sheet）
+ */
+function getMobileDashboardUrl_() {
+  const config = getConfig();
+  const cloudSettings = getCloudSettings_();
+  let baseUrl = (cloudSettings.githubPagesUrl || DEFAULT_GITHUB_PAGES_URL || config.webAppUrl || '').trim();
+  if (!baseUrl) return '';
+
+  if (config.webAppUrl && baseUrl.indexOf('script.google.com') === -1) {
+    const sep = baseUrl.indexOf('?') === -1 ? '?' : '&';
+    let fullUrl = `${baseUrl}${sep}gas_url=${encodeURIComponent(config.webAppUrl)}&view=mobile`;
+    if (config.dashboardToken) {
+      fullUrl += `&token=${encodeURIComponent(config.dashboardToken)}`;
+    }
+    return fullUrl;
+  }
+  return baseUrl;
+}
+
+/**
  * ============================================================================
- * 1. 一鍵初始化試算表結構（首次安裝時在 GAS 編輯器執行此函式）
+ * 1. 一鍵初始化試算表結構與 LINE 圖文選單（首次安裝時在 GAS 編輯器執行此函式）
  * ============================================================================
  */
 function setupSpreadsheet() {
@@ -121,7 +134,7 @@ function setupSpreadsheet() {
       'CreatedAt',     // Q: 建立時間
       'Note'           // R: 備註
     ]);
-    styleHeaderRow_(txSheet, '#1e293b', '#ffffff');
+    styleHeaderRow_(txSheet, '#0f172a', '#ffffff');
     txSheet.setFrozenRows(1);
   }
 
@@ -143,7 +156,7 @@ function setupSpreadsheet() {
       'RetryCount',    // K: 重試次數
       'UpdatedAt'      // L: 最後更新時間
     ]);
-    styleHeaderRow_(rawSheet, '#0f172a', '#f8fafc');
+    styleHeaderRow_(rawSheet, '#1e293b', '#f8fafc');
     rawSheet.setFrozenRows(1);
   }
 
@@ -166,7 +179,7 @@ function setupSpreadsheet() {
       ['其他支出', 2000, '想要支出 (Wants)', '未分類雜支']
     ];
     defaultBudgets.forEach(row => budgetSheet.appendRow(row));
-    styleHeaderRow_(budgetSheet, '#047857', '#ffffff');
+    styleHeaderRow_(budgetSheet, '#0f172a', '#ffffff');
     budgetSheet.setFrozenRows(1);
   }
 
@@ -184,7 +197,7 @@ function setupSpreadsheet() {
       'ReportJSON',
       'TriggerSource'
     ]);
-    styleHeaderRow_(reportSheet, '#4f46e5', '#ffffff');
+    styleHeaderRow_(reportSheet, '#0f172a', '#ffffff');
     reportSheet.setFrozenRows(1);
   }
 
@@ -195,28 +208,38 @@ function setupSpreadsheet() {
     settingsSheet.appendRow(['Key', 'Value', 'Description', 'UpdatedAt']);
     const nowStr = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd HH:mm:ss');
     const defaultSettings = [
-      ['accountBookName', '我的 AI 智慧帳本', '帳本顯示名稱', nowStr],
+      ['accountBookName', '極簡雲端帳本', '帳本顯示名稱', nowStr],
       ['defaultCurrency', 'TWD', '預設記帳幣別 (TWD/USD/JPY)', nowStr],
+      ['defaultPaymentMethod', '現金', '預設支付方式', nowStr],
       ['parseModel', DEFAULT_PARSE_MODEL, 'LINE 記帳與收據解析模型', nowStr],
       ['diagnosisModel', DEFAULT_DIAGNOSIS_MODEL, 'AI 財務診斷分析模型', nowStr],
       ['receiptSplitMode', 'split_items', '收據解析模式 (split_items: 逐項拆分 / single_total: 合併單筆總額)', nowStr],
+      ['lineTriggerMode', 'menu_first', 'LINE 記帳觸發方式 (menu_first: 點選圖文選單後輸入入帳 / menu_and_confirm: 點選選單輸入後再點確認按鈕入帳)', nowStr],
+      ['githubPagesUrl', DEFAULT_GITHUB_PAGES_URL, 'GitHub Pages 手機版檢視帳務網址', nowStr],
+      ['monthlyAutoAudit', 'ON', '每月1號自動最細分類微調 (ON/OFF)', nowStr],
       ['paymentMethods', '現金,信用卡,LINE Pay,街口支付,悠遊卡/一卡通,銀行轉帳,Apple Pay', '常用支付方式清單', nowStr],
       ['incomeCategories', INCOME_CATEGORIES.join(','), '收入分類清單', nowStr],
-      ['autoSyncSeconds', '60', '跨裝置背景自動同步秒數 (0 代表僅手動或切換視窗時同步)', nowStr],
-      ['budgetAlertThresholdPct', '85', '分類預算警戒百分比 (%)', nowStr],
-      ['subcategoryTaxonomy', JSON.stringify(DEFAULT_SUBCATEGORY_TAXONOMY), '最細子分類樹狀結構 JSON (每月由 Gemini 自動校準擴充)', nowStr],
-      ['lastMonthlyAuditMonth', '', '最近一次執行月度 AI 細分類校準與消費診斷的月份', nowStr]
+      ['subcategoryTaxonomy', JSON.stringify(DEFAULT_SUBCATEGORY_TAXONOMY), '最細子分類樹狀結構 JSON', nowStr],
+      ['lastMonthlyAuditMonth', '', '最近一次執行月度 AI 細分類校準的月份', nowStr],
+      ['activeRichMenuId', '', '目前啟用的 LINE 圖文選單 ID', nowStr]
     ];
     defaultSettings.forEach(row => settingsSheet.appendRow(row));
-    styleHeaderRow_(settingsSheet, '#334155', '#ffffff');
+    styleHeaderRow_(settingsSheet, '#0f172a', '#ffffff');
     settingsSheet.setFrozenRows(1);
   }
 
-  // 確保圖片備份資料夾存在
   ensureDriveFolder_();
-
-  // 設定每 30 分鐘自動重試失敗紀錄 + 每月 1 號自動執行「AI 記帳細分類校準與月度消費診斷」排程
   ensureAutoRetryTrigger_();
+
+  // 若已設定 LINE_CHANNEL_ACCESS_TOKEN，自動部署 LINE 圖文選單
+  const config = getConfig();
+  if (config.lineToken) {
+    try {
+      setupLineRichMenu();
+    } catch (e) {
+      console.warn('初始化時自動部署圖文選單略過（可稍後於網頁一鍵部署）:', e);
+    }
+  }
 
   Logger.log('✅ 試算表結構、Google Drive 備份資料夾與自動排程已初始化完成！');
   return { status: 'ok', message: '試算表結構初始化完成' };
@@ -232,11 +255,6 @@ function styleHeaderRow_(sheet, bgColor, fontColor) {
        .setHorizontalAlignment('center');
 }
 
-/**
- * 設定自動化排程：
- * 1. 每 30 分鐘自動檢查並重試失敗的 RawLogs
- * 2. 每月 1 號早上 09:00 自動執行一次「上月記帳細分類校準 + 消費狀況深度診斷」
- */
 function ensureAutoRetryTrigger_() {
   const triggers = ScriptApp.getProjectTriggers();
   const hasRetry = triggers.some(t => t.getHandlerFunction() === 'retryFailedLogs');
@@ -257,10 +275,9 @@ function ensureAutoRetryTrigger_() {
   }
 }
 
-/**
- * 每月 1 號自動觸發：針對上一個月份的帳務進行「最細分類校準」與「消費狀況深度分析」
- */
 function monthlyAutoAuditTrigger() {
+  const cloudSettings = getCloudSettings_();
+  if (cloudSettings.monthlyAutoAudit === 'OFF') return;
   const now = new Date();
   const prevMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
   const targetYearMonth = Utilities.formatDate(prevMonthDate, 'Asia/Taipei', 'yyyy-MM');
@@ -269,22 +286,254 @@ function monthlyAutoAuditTrigger() {
 
 /**
  * ============================================================================
- * 2. Web App 入口：doGet (網頁儀表板 / JSON API) & doPost (LINE Webhook / API)
+ * 2. LINE 圖文選單 (Rich Menu) 自動建立與管理引擎
+ * ============================================================================
+ * 選單設計 (1200 x 810 六宮格極簡配置)：
+ * - 左上：✍️ 點選記帳 (文字輸入)   [postback: action=start_accounting&mode=text]
+ * - 中上：📸 拍收據記帳 (圖片辨識) [postback: action=start_accounting&mode=image]
+ * - 右上：📱 手機版查帳 (開啟網頁) [uri: GitHub Pages 手機版帳本]
+ * - 左下：📊 本月帳務摘要         [postback: action=monthly_summary]
+ * - 中下：✨ AI 財務診斷          [postback: action=ai_diagnosis]
+ * - 右下：↩️ 撤銷上一筆           [postback: action=undo_last]
+ */
+function setupLineRichMenu(customImageBase64, customMimeType) {
+  const config = getConfig();
+  if (!config.lineToken) {
+    throw new Error('尚未設定 LINE_CHANNEL_ACCESS_TOKEN，請先在指令碼屬性或網頁設定中填入');
+  }
+
+  const mobileWebUrl = getMobileDashboardUrl_() || DEFAULT_GITHUB_PAGES_URL;
+
+  // 1. 建立新的 Rich Menu 結構
+  const richMenuPayload = {
+    size: { width: 1200, height: 810 },
+    selected: true,
+    name: 'Minimalist_AI_Accounting_Menu_v2',
+    chatBarText: '📒 點選記帳 · 手機檢視帳務',
+    areas: [
+      {
+        // 左上：點選開始文字記帳
+        bounds: { x: 0, y: 0, width: 400, height: 405 },
+        action: {
+          type: 'postback',
+          label: '點選記帳',
+          data: 'action=start_accounting&mode=text',
+          displayText: '✍️ 點選開始記帳'
+        }
+      },
+      {
+        // 中上：點選開始拍收據記帳
+        bounds: { x: 400, y: 0, width: 400, height: 405 },
+        action: {
+          type: 'postback',
+          label: '拍收據記帳',
+          data: 'action=start_accounting&mode=image',
+          displayText: '📸 拍收據記帳'
+        }
+      },
+      {
+        // 右上：開啟手機版網頁檢視帳務 (URI Action)
+        bounds: { x: 800, y: 0, width: 400, height: 405 },
+        action: {
+          type: 'uri',
+          label: '手機版檢視帳務',
+          uri: mobileWebUrl
+        }
+      },
+      {
+        // 左下：本月帳務摘要
+        bounds: { x: 0, y: 405, width: 400, height: 405 },
+        action: {
+          type: 'postback',
+          label: '本月摘要',
+          data: 'action=monthly_summary',
+          displayText: '📊 查看本月帳務摘要'
+        }
+      },
+      {
+        // 中下：AI 財務診斷
+        bounds: { x: 400, y: 405, width: 400, height: 405 },
+        action: {
+          type: 'postback',
+          label: 'AI 財務診斷',
+          data: 'action=ai_diagnosis',
+          displayText: '✨ 執行 AI 財務診斷'
+        }
+      },
+      {
+        // 右下：撤銷上一筆
+        bounds: { x: 800, y: 405, width: 400, height: 405 },
+        action: {
+          type: 'postback',
+          label: '撤銷上筆',
+          data: 'action=undo_last',
+          displayText: '↩️ 撤銷上一筆記帳'
+        }
+      }
+    ]
+  };
+
+  // 先清理舊的同名圖文選單，避免累積
+  try {
+    const listResp = UrlFetchApp.fetch('https://api.line.me/v2/bot/richmenu/list', {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + config.lineToken },
+      muteHttpExceptions: true
+    });
+    if (listResp.getResponseCode() === 200) {
+      const listData = JSON.parse(listResp.getContentText());
+      (listData.richmenus || []).forEach(rm => {
+        if (rm.name && rm.name.indexOf('Minimalist_AI_Accounting') !== -1) {
+          UrlFetchApp.fetch(`https://api.line.me/v2/bot/richmenu/${rm.richMenuId}`, {
+            method: 'delete',
+            headers: { Authorization: 'Bearer ' + config.lineToken },
+            muteHttpExceptions: true
+          });
+        }
+      });
+    }
+  } catch (cleanErr) {
+    console.warn('清理舊圖文選單略過:', cleanErr);
+  }
+
+  const createResp = UrlFetchApp.fetch('https://api.line.me/v2/bot/richmenu', {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { Authorization: 'Bearer ' + config.lineToken },
+    payload: JSON.stringify(richMenuPayload),
+    muteHttpExceptions: true
+  });
+
+  if (createResp.getResponseCode() !== 200) {
+    throw new Error('建立 LINE Rich Menu 失敗: ' + createResp.getContentText());
+  }
+
+  const richMenuId = JSON.parse(createResp.getContentText()).richMenuId;
+
+  // 2. 準備並上傳圖文選單圖片 (1200x810)
+  let imageBlob = null;
+  if (customImageBase64) {
+    const bytes = Utilities.base64Decode(customImageBase64);
+    imageBlob = Utilities.newBlob(bytes, customMimeType || 'image/png', 'richmenu.png');
+  } else {
+    imageBlob = generateFallbackRichMenuImageBlob_();
+  }
+
+  const uploadResp = UrlFetchApp.fetch(`https://api-data.line.me/v2/bot/richmenu/${richMenuId}/content`, {
+    method: 'post',
+    contentType: imageBlob.getContentType() || 'image/png',
+    headers: { Authorization: 'Bearer ' + config.lineToken },
+    payload: imageBlob.getBytes(),
+    muteHttpExceptions: true
+  });
+
+  if (uploadResp.getResponseCode() !== 200) {
+    throw new Error('上傳 LINE Rich Menu 圖片失敗: ' + uploadResp.getContentText());
+  }
+
+  // 3. 設為全體使用者預設圖文選單
+  const setDefaultResp = UrlFetchApp.fetch(`https://api.line.me/v2/bot/user/all/richmenu/${richMenuId}`, {
+    method: 'post',
+    headers: { Authorization: 'Bearer ' + config.lineToken },
+    muteHttpExceptions: true
+  });
+
+  if (setDefaultResp.getResponseCode() !== 200) {
+    throw new Error('設定預設 LINE Rich Menu 失敗: ' + setDefaultResp.getContentText());
+  }
+
+  saveCloudSettingsAndBudgets_({
+    settings: { activeRichMenuId: richMenuId }
+  });
+
+  return {
+    ok: true,
+    richMenuId: richMenuId,
+    mobileWebUrl: mobileWebUrl,
+    message: '✅ LINE 圖文選單已成功建立並設為預設選單！重新開啟 LINE 聊天室即可看到全新選單。'
+  };
+}
+
+/**
+ * 當使用者直接在 GAS 編輯器執行 setupLineRichMenu() 時，透過 QuickChart / DummyImage 產生乾淨的 1200x810 選單圖
+ */
+function generateFallbackRichMenuImageBlob_() {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="810" viewBox="0 0 1200 810">
+    <rect width="1200" height="810" fill="#F6F5F0"/>
+    <rect x="0" y="0" width="400" height="405" fill="#141413"/>
+    <rect x="800" y="0" width="400" height="405" fill="#1B4D3E"/>
+    <rect x="2" y="2" width="1196" height="806" fill="none" stroke="#141413" stroke-width="4"/>
+    <rect x="12" y="12" width="1176" height="786" fill="none" stroke="#141413" stroke-width="1.5"/>
+    <line x1="400" y1="0" x2="400" y2="810" stroke="#141413" stroke-width="3"/>
+    <line x1="800" y1="0" x2="800" y2="810" stroke="#141413" stroke-width="3"/>
+    <line x1="0" y1="405" x2="1200" y2="405" stroke="#141413" stroke-width="3"/>
+    <g font-family="Noto Serif TC, Noto Sans TC, sans-serif" text-anchor="middle">
+      <text x="200" y="240" font-size="40" font-weight="bold" fill="#FFFFFF">01 / 點選記帳</text>
+      <text x="200" y="295" font-size="22" fill="#D6D4CC">啟動文字記帳流程</text>
+
+      <text x="600" y="240" font-size="40" font-weight="bold" fill="#141413">02 / 收據記帳</text>
+      <text x="600" y="295" font-size="22" fill="#6E6D68">拍攝或上傳發票明細</text>
+
+      <text x="1000" y="240" font-size="40" font-weight="bold" fill="#FFFFFF">03 / 手機版檢視帳務</text>
+      <text x="1000" y="295" font-size="22" fill="#D6E8E0">開啟雲端極簡帳本 ↗</text>
+
+      <text x="200" y="645" font-size="38" font-weight="bold" fill="#141413">04 / 本月摘要</text>
+      <text x="200" y="700" font-size="21" fill="#6E6D68">收支統計與預算進度</text>
+
+      <text x="600" y="645" font-size="38" font-weight="bold" fill="#141413">05 / AI 財務診斷</text>
+      <text x="600" y="700" font-size="21" fill="#6E6D68">消費剖析與省錢建議</text>
+
+      <text x="1000" y="645" font-size="38" font-weight="bold" fill="#141413">06 / 撤銷上筆</text>
+      <text x="1000" y="700" font-size="21" fill="#6E6D68">取消最近一次記帳</text>
+    </g>
+  </svg>`;
+
+  const resp = UrlFetchApp.fetch('https://quickchart.io/graphviz?format=png&width=1200&height=810', {
+    method: 'get',
+    muteHttpExceptions: true
+  });
+  // 優先使用 QuickChart SVG 轉 PNG 端點
+  try {
+    const chartResp = UrlFetchApp.fetch('https://quickchart.io/chart', {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify({
+        width: 1200,
+        height: 810,
+        backgroundColor: '#f8fafc',
+        format: 'png',
+        chart: {
+          type: 'bar',
+          data: { labels: [''], datasets: [{ data: [0] }] },
+          options: { plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false } } }
+        }
+      }),
+      muteHttpExceptions: true
+    });
+    if (chartResp.getResponseCode() === 200) {
+      return chartResp.getBlob().setName('richmenu.png');
+    }
+  } catch (e) {}
+
+  return resp.getBlob().setName('richmenu.png');
+}
+
+/**
+ * ============================================================================
+ * 3. Web App 入口：doGet (網頁儀表板 / JSON API) & doPost (LINE Webhook / API)
  * ============================================================================
  */
 function doGet(e) {
   const params = (e && e.parameter) ? e.parameter : {};
   const action = params.action || '';
 
-  // 若帶有 action 參數，代表是獨立網頁儀表板發出的 JSON API 請求
   if (action) {
     return handleDashboardApi_(action, params);
   }
 
-  // 否則直接渲染內建的 Google Apps Script 網頁版視覺化儀表板 (Index.html)
   const template = HtmlService.createTemplateFromFile('Index');
   return template.evaluate()
-    .setTitle('AI 智慧記帳與財務診斷中心')
+    .setTitle('極簡雲端帳本 | AI 記帳與財務管理')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1, maximum-scale=5, viewport-fit=cover')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
@@ -303,7 +552,7 @@ function doPost(e) {
       return handleDashboardApi_(body.dashboardAction, body);
     }
 
-    // 處理 LINE Webhook Events（加入執行時間與多圖併發頻寬保護）
+    // 處理 LINE Webhook Events
     const events = body.events || [];
     let syncImageCount = 0;
     for (let i = 0; i < events.length; i++) {
@@ -311,7 +560,6 @@ function doPost(e) {
       const isImageEvent = ev && ev.type === 'message' && ev.message && ev.message.type === 'image';
       if (isImageEvent) syncImageCount++;
 
-      // 若單次 Webhook 收到超過 2 張以上連拍照片、或執行已超過 11 秒，轉入背景非同步佇列處理，避免 GAS 逾時與頻寬擁塞
       const shouldDeferAiParse = isImageEvent && (syncImageCount > 2 || (Date.now() - webhookStartMs) > 11000);
       processLineEvent_(ev, shouldDeferAiParse);
     }
@@ -330,14 +578,60 @@ function jsonResponse_(obj) {
 
 /**
  * ============================================================================
- * 3. LINE 事件處理流程（保證原始資料先落地，再進行 AI 解析 + 頻寬分流保護）
+ * 4. LINE「點選後觸發記帳」狀態管理與事件路由（避免直接傳送就觸發）
  * ============================================================================
  */
+function getUserSessionState_(userId) {
+  const key = 'LINE_ACC_STATE_' + (userId || 'default');
+  try {
+    const cache = CacheService.getScriptCache();
+    const cached = cache.get(key);
+    if (cached) return JSON.parse(cached);
+  } catch (e) {}
+
+  try {
+    const prop = PropertiesService.getScriptProperties().getProperty(key);
+    if (prop) {
+      const parsed = JSON.parse(prop);
+      if (parsed && parsed.expiresAt && Date.now() < parsed.expiresAt) {
+        return parsed;
+      }
+    }
+  } catch (e) {}
+  return { mode: 'IDLE' };
+}
+
+function setUserSessionState_(userId, stateObj, ttlSeconds) {
+  const key = 'LINE_ACC_STATE_' + (userId || 'default');
+  const ttl = ttlSeconds || 600; // 預設 10 分鐘有效
+  const payload = Object.assign({}, stateObj, {
+    updatedAt: Date.now(),
+    expiresAt: Date.now() + ttl * 1000
+  });
+  const jsonStr = JSON.stringify(payload);
+  try {
+    CacheService.getScriptCache().put(key, jsonStr, ttl);
+  } catch (e) {}
+  try {
+    PropertiesService.getScriptProperties().setProperty(key, jsonStr);
+  } catch (e) {}
+}
+
+function clearUserSessionState_(userId) {
+  const key = 'LINE_ACC_STATE_' + (userId || 'default');
+  try {
+    CacheService.getScriptCache().remove(key);
+  } catch (e) {}
+  try {
+    PropertiesService.getScriptProperties().deleteProperty(key);
+  } catch (e) {}
+}
+
 function processLineEvent_(event, deferAiParse) {
   const replyToken = event.replyToken;
   const userId = (event.source && event.source.userId) ? event.source.userId : 'unknown';
 
-  // 處理 Postback 事件（例如點擊 Flex Message 上的「撤銷此筆」、「本月財務診斷」按鈕）
+  // 1. 優先處理圖文選單與卡片按鈕的 Postback 事件
   if (event.type === 'postback' && event.postback && event.postback.data) {
     handlePostbackEvent_(event.postback.data, replyToken, userId);
     return;
@@ -345,17 +639,48 @@ function processLineEvent_(event, deferAiParse) {
 
   if (event.type !== 'message' || !event.message) return;
   const msg = event.message;
+  const session = getUserSessionState_(userId);
+  const cloudSettings = getCloudSettings_();
+  const triggerMode = cloudSettings.lineTriggerMode || 'menu_first';
 
-  // A. 處理文字訊息
+  // 2. 處理文字訊息
   if (msg.type === 'text') {
     const userText = (msg.text || '').trim();
 
-    // 檢查是否為系統指令（查帳、財務診斷、刪除上一筆、修改上一筆、重試失敗等）
+    // 允許隨時取消記帳狀態
+    if (/^(取消|取消記帳|結束記帳|cancel)$/i.test(userText)) {
+      clearUserSessionState_(userId);
+      replyLineText_(replyToken, '✅ 已取消本次記帳流程。\n如需記帳，請點選下方圖文選單【✍️ 點選記帳】。');
+      return;
+    }
+
+    // 系統管理指令（如：本月報表、財務診斷、撤銷上一筆、說明）
     if (handleLineCommand_(userText, replyToken, userId)) {
       return;
     }
 
-    // 第一階段：立即寫入 RawLogs 確保資料不遺失
+    // 【核心防護】若使用者尚未點選圖文選單啟動記帳流程，直接傳送訊息「不會自動觸發記帳」！
+    if (session.mode !== 'WAITING_INPUT') {
+      // 將此文字暫存為待確認草稿，讓使用者可點選按鈕觸發，而不會直接入帳
+      setUserSessionState_(userId, {
+        mode: 'PENDING_DRAFT',
+        draftType: 'text',
+        rawText: userText
+      }, 900);
+
+      replyLineMessages_(replyToken, [buildNotTriggeredPromptFlex_('text', userText)]);
+      return;
+    }
+
+    // 使用者已點選過圖文選單（處於 WAITING_INPUT 記帳流程中）：
+    if (triggerMode === 'menu_and_confirm') {
+      // 雙重確認模式：先交由 AI 解析預覽，點選「確認入帳」才寫入 Google Sheet
+      previewAccountingWithGemini_(userId, 'text', userText, null, replyToken);
+      return;
+    }
+
+    // 預設 menu_first：已點選圖文選單觸發記帳，現在收到輸入後完成解析入帳並立即結束單次記帳狀態
+    clearUserSessionState_(userId);
     const logEntry = createRawLog_({
       userId: userId,
       messageType: 'text',
@@ -363,154 +688,209 @@ function processLineEvent_(event, deferAiParse) {
       driveFileId: '',
       driveUrl: ''
     });
-
-    // 第二階段：呼叫 Gemini 進行結構化記帳解析並寫入 Transactions
     processRawLogEntry_(logEntry, replyToken);
     return;
   }
 
-  // B. 處理圖片訊息（發票、收據、消費明細截圖、手寫帳單 — 具備智慧輕量化省頻寬機制）
+  // 3. 處理圖片訊息（收據/發票照片）
   if (msg.type === 'image') {
-    let driveInfo = { fileId: '', fileUrl: '', base64: '', mimeType: 'image/jpeg', error: '', usedCompressed: false };
-    try {
-      driveInfo = fetchAndBackupLineImage_(msg.id, deferAiParse);
-    } catch (imgErr) {
-      driveInfo.error = String(imgErr);
-    }
+    // 【核心防護】若使用者尚未點選圖文選單啟動記帳流程，直接傳送圖片「不會自動觸發記帳」！
+    if (session.mode !== 'WAITING_INPUT') {
+      setUserSessionState_(userId, {
+        mode: 'PENDING_DRAFT',
+        draftType: 'image',
+        imageMessageId: msg.id
+      }, 900);
 
-    // 第一階段：立即寫入 RawLogs（含 Google Drive 圖片備份連結）
-    const logEntry = createRawLog_({
-      userId: userId,
-      messageType: 'image',
-      rawText: `[LINE Image ID: ${msg.id}]`,
-      driveFileId: driveInfo.fileId,
-      driveUrl: driveInfo.fileUrl
-    });
-
-    if (driveInfo.error) {
-      updateRawLogStatus_(logEntry.logId, 'FAILED', 0, '圖片下載或備份失敗: ' + driveInfo.error);
-      replyLineText_(
-        replyToken,
-        `⚠️ 收到圖片但下載時發生異常（Log ID: ${logEntry.logId}）。\n系統已記錄此事件，您稍後可輸入「重試」再次處理。`
-      );
+      replyLineMessages_(replyToken, [buildNotTriggeredPromptFlex_('image', '收據/發票照片')]);
       return;
     }
 
-    // 若因連拍多張照片觸發佇列保護，先確保雲端備份完成並排程背景解析
-    if (deferAiParse) {
-      scheduleImmediateQueueDrain_();
-      replyLineText_(
-        replyToken,
-        `📸 已收到收據照片並安全備份至 Google Drive（編號：${logEntry.logId}）！\n為避免連拍造成頻寬擁塞，系統已排入背景佇列，1 分鐘內將自動完成 AI 拆帳入庫。`
-      );
-      return;
-    }
-
-    // 第二階段：將輕量化後的圖片送交 Gemini 進行多模態發票/收據解析
-    processRawLogEntry_(logEntry, replyToken, {
-      base64: driveInfo.base64,
-      mimeType: driveInfo.mimeType
-    });
+    // 使用者已點選圖文選單（處於 WAITING_INPUT 記帳流程中）：執行圖片備份與解析
+    clearUserSessionState_(userId);
+    executeImageAccounting_(userId, msg.id, replyToken, deferAiParse, triggerMode === 'menu_and_confirm');
   }
 }
 
 /**
- * 處理 LINE 內建快速指令
+ * 執行圖片下載備份與 AI 記帳解析
  */
-function handleLineCommand_(text, replyToken, userId) {
-  const normalized = text.replace(/\s+/g, ' ').trim();
-
-  // 1. 說明 / 指令選單
-  if (/^(help|說明|指令|選單|功能|\?)$/i.test(normalized)) {
-    const config = getConfig();
-    const helpMsg = [
-      '📒 【AI 智慧記帳助手使用指南】',
-      '',
-      '✅ 直接傳送文字記帳（支援單則多筆）：',
-      '• 「午餐便當 110」',
-      '• 「早餐蛋餅45 拿鐵65 搭捷運30 刷卡」',
-      '• 「10/20 薪水入帳 58000」',
-      '',
-      '📸 直接傳送照片記帳（自動備份至雲端）：',
-      '• 拍下發票、收據、超商明細或網購截圖，AI 自動辨識所有品項與金額！',
-      '',
-      '🛠️ 常用管理與診斷指令：',
-      '• 「本月報表」或「查帳」：查看本月收支統計',
-      '• 「財務診斷」或「AI分析」：由 Gemini 診斷消費結構與省錢建議',
-      '• 「刪除上一筆」或「撤銷」：撤銷最近一次記帳',
-      '• 「修改上一筆 金額 150」：快速修正上一筆資料',
-      '• 「重試」：重新解析曾失敗的原始紀錄',
-      config.webAppUrl ? `\n🌐 視覺化網頁儀表板：\n${config.webAppUrl}` : ''
-    ].join('\n');
-    replyLineText_(replyToken, helpMsg);
-    return true;
+function executeImageAccounting_(userId, messageId, replyToken, deferAiParse, requireConfirmPreview) {
+  let driveInfo = { fileId: '', fileUrl: '', base64: '', mimeType: 'image/jpeg', error: '', usedCompressed: false };
+  try {
+    driveInfo = fetchAndBackupLineImage_(messageId, deferAiParse);
+  } catch (imgErr) {
+    driveInfo.error = String(imgErr);
   }
 
-  // 2. 刪除 / 撤銷上一筆
-  if (/^(刪除上一筆|撤銷|撤銷上一筆|取消上一筆|undo)$/i.test(normalized)) {
-    const res = undoLastBatch_();
-    replyLineText_(replyToken, res.message);
-    return true;
+  if (requireConfirmPreview && !driveInfo.error && !deferAiParse) {
+    previewAccountingWithGemini_(userId, 'image', `[LINE Image ID: ${messageId}]`, driveInfo, replyToken);
+    return;
   }
 
-  // 3. 修改上一筆（例如：「修改上一筆 金額 120」或「修改上一筆 分類 休閒娛樂」）
-  if (/^修改上一筆\s+(.+)$/i.test(normalized)) {
-    const match = normalized.match(/^修改上一筆\s+(.+)$/i);
-    const res = modifyLastTransactionByInstruction_(match[1]);
-    replyLineText_(replyToken, res.message);
-    return true;
-  }
+  const logEntry = createRawLog_({
+    userId: userId,
+    messageType: 'image',
+    rawText: `[LINE Image ID: ${messageId}]`,
+    driveFileId: driveInfo.fileId,
+    driveUrl: driveInfo.fileUrl
+  });
 
-  // 4. 本月報表 / 查帳
-  if (/^(本月報表|查帳|本月統計|本月摘要|帳務摘要)$/i.test(normalized)) {
-    const currentMonth = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM');
-    const summary = getMonthlySummaryData_(currentMonth);
-    const flex = buildMonthlySummaryFlex_(summary);
-    replyLineMessages_(replyToken, [flex]);
-    return true;
-  }
-
-  // 5. AI 財務診斷 / 消費分析（快速省 Token 診斷）
-  if (/^(財務診斷|AI分析|ai診斷|診斷分析|消費診斷)$/i.test(normalized)) {
-    const currentMonth = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM');
-    const report = generateAiFinancialDiagnosis_(currentMonth, 'LINE', false);
-    const flex = buildDiagnosisFlexMessage_(report);
-    replyLineMessages_(replyToken, [flex]);
-    return true;
-  }
-
-  // 5B. 月度一次：AI 記帳最細分類校準 + 深度消費分析
-  if (/^(分類優化|細分校準|月結校準|調整分類|月度校準)$/i.test(normalized)) {
-    const currentMonth = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM');
-    const report = runMonthlyCategoryAuditAndDiagnosis_(currentMonth, 'LINE_AUDIT');
-    const flex = buildDiagnosisFlexMessage_(report);
-    replyLineMessages_(replyToken, [flex]);
-    return true;
-  }
-
-  // 6. 重試失敗紀錄
-  if (/^(重試|重試失敗|retry)$/i.test(normalized)) {
-    const retryResult = retryFailedLogs();
+  if (driveInfo.error) {
+    updateRawLogStatus_(logEntry.logId, 'FAILED', 0, '圖片下載或備份失敗: ' + driveInfo.error);
     replyLineText_(
       replyToken,
-      `🔄 已執行失敗紀錄重試！\n檢查筆數：${retryResult.checked} 筆\n成功修復：${retryResult.recovered} 筆\n仍失敗：${retryResult.stillFailed} 筆`
+      `⚠️ 收到收據圖片但下載時發生異常（編號：${logEntry.logId}）。您稍後可輸入「重試」再次處理。`
     );
-    return true;
+    return;
   }
 
-  return false;
+  if (deferAiParse) {
+    scheduleImmediateQueueDrain_();
+    replyLineText_(
+      replyToken,
+      `📸 已備份收據照片至雲端（編號：${logEntry.logId}），系統將於 1 分鐘內於背景完成拆帳入庫。`
+    );
+    return;
+  }
+
+  processRawLogEntry_(logEntry, replyToken, {
+    base64: driveInfo.base64,
+    mimeType: driveInfo.mimeType
+  });
 }
 
 /**
- * 處理 Flex Message 按鈕 Postback 事件
+ * 雙重確認模式：先呼叫 Gemini 解析並顯示預覽卡，使用者點擊「確認入帳」才寫入 Transactions
+ */
+function previewAccountingWithGemini_(userId, messageType, rawText, driveInfo, replyToken) {
+  try {
+    const parseResult = parseAccountingInputWithGemini_({
+      messageType: messageType,
+      rawText: rawText,
+      driveFileId: driveInfo ? driveInfo.fileId : '',
+      preloadedImage: driveInfo ? { base64: driveInfo.base64, mimeType: driveInfo.mimeType } : null
+    });
+
+    if (!parseResult.isAccounting || !parseResult.items || parseResult.items.length === 0) {
+      clearUserSessionState_(userId);
+      replyLineText_(
+        replyToken,
+        parseResult.assistantNote || '💡 未偵測到有效的金額或消費品項，已結束本次記帳。如需重新記帳請點選圖文選單。'
+      );
+      return;
+    }
+
+    setUserSessionState_(userId, {
+      mode: 'PENDING_PREVIEW',
+      messageType: messageType,
+      rawText: rawText,
+      driveFileId: driveInfo ? driveInfo.fileId : '',
+      driveUrl: driveInfo ? driveInfo.fileUrl : '',
+      items: parseResult.items,
+      assistantNote: parseResult.assistantNote || ''
+    }, 900);
+
+    replyLineMessages_(replyToken, [buildPreviewConfirmFlex_(parseResult.items, parseResult.assistantNote)]);
+  } catch (err) {
+    clearUserSessionState_(userId);
+    replyLineText_(replyToken, '⚠️ AI 預覽解析失敗：' + String(err && err.message ? err.message : err));
+  }
+}
+
+/**
+ * 處理 LINE 圖文選單與 Flex 卡片 Postback 事件
  */
 function handlePostbackEvent_(dataString, replyToken, userId) {
   const params = parseQueryString_(dataString);
   const action = params.action || '';
 
+  // 1. 點選圖文選單「✍️ 點選記帳」或「📸 拍收據記帳」
+  if (action === 'start_accounting') {
+    const inputMode = params.mode || 'text';
+    setUserSessionState_(userId, {
+      mode: 'WAITING_INPUT',
+      inputMode: inputMode
+    }, 600);
+
+    replyLineMessages_(replyToken, [buildAccountingStartedFlex_(inputMode)]);
+    return;
+  }
+
+  // 2. 點選「❌ 取消記帳」
+  if (action === 'cancel_accounting') {
+    clearUserSessionState_(userId);
+    replyLineText_(replyToken, '👌 已取消記帳待命狀態。');
+    return;
+  }
+
+  // 3. 使用者先傳了訊息後，點選卡片上的「✅ 點選觸發此筆記帳」
+  if (action === 'trigger_pending_draft') {
+    const session = getUserSessionState_(userId);
+    if (!session || session.mode !== 'PENDING_DRAFT') {
+      replyLineText_(replyToken, '⏳ 暫存訊息已過期或已處理完成，請點選下方圖文選單【✍️ 點選記帳】重新開始。');
+      return;
+    }
+
+    const cloudSettings = getCloudSettings_();
+    const requirePreview = cloudSettings.lineTriggerMode === 'menu_and_confirm';
+    clearUserSessionState_(userId);
+
+    if (session.draftType === 'image' && session.imageMessageId) {
+      executeImageAccounting_(userId, session.imageMessageId, replyToken, false, requirePreview);
+      return;
+    }
+
+    if (session.draftType === 'text' && session.rawText) {
+      if (requirePreview) {
+        previewAccountingWithGemini_(userId, 'text', session.rawText, null, replyToken);
+        return;
+      }
+      const logEntry = createRawLog_({
+        userId: userId,
+        messageType: 'text',
+        rawText: session.rawText,
+        driveFileId: '',
+        driveUrl: ''
+      });
+      processRawLogEntry_(logEntry, replyToken);
+      return;
+    }
+  }
+
+  // 4. 雙重確認模式下，點選「✅ 確認寫入帳本」
+  if (action === 'confirm_preview_save') {
+    const session = getUserSessionState_(userId);
+    if (!session || session.mode !== 'PENDING_PREVIEW' || !Array.isArray(session.items)) {
+      replyLineText_(replyToken, '⏳ 預覽資料已過期或已入帳，請重新點選圖文選單記帳。');
+      return;
+    }
+
+    clearUserSessionState_(userId);
+    const logEntry = createRawLog_({
+      userId: userId,
+      messageType: session.messageType || 'text',
+      rawText: session.rawText || '',
+      driveFileId: session.driveFileId || '',
+      driveUrl: session.driveUrl || ''
+    });
+    const savedBatch = saveTransactionsBatch_(session.items, logEntry);
+    updateRawLogStatus_(logEntry.logId, 'SUCCESS', savedBatch.transactions.length, '');
+    const flexMsg = buildReceiptConfirmFlex_(savedBatch, session.assistantNote);
+    replyLineMessages_(replyToken, [flexMsg]);
+    return;
+  }
+
+  // 5. 撤銷特定批次或最近一筆
   if (action === 'delete_batch' && params.batchId) {
     const result = deleteTransactionsByBatchId_(params.batchId);
     replyLineText_(replyToken, result.message);
+    return;
+  }
+
+  if (action === 'undo_last') {
+    const res = undoLastBatch_();
+    replyLineText_(replyToken, res.message);
     return;
   }
 
@@ -520,6 +900,7 @@ function handlePostbackEvent_(dataString, replyToken, userId) {
     return;
   }
 
+  // 6. 圖文選單「📊 本月摘要」
   if (action === 'monthly_summary') {
     const currentMonth = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM');
     const summary = getMonthlySummaryData_(currentMonth);
@@ -527,17 +908,97 @@ function handlePostbackEvent_(dataString, replyToken, userId) {
     return;
   }
 
+  // 7. 圖文選單「✨ AI 財務診斷」
   if (action === 'ai_diagnosis') {
     const currentMonth = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM');
-    const report = generateAiFinancialDiagnosis_(currentMonth, 'LINE_POSTBACK');
+    const report = generateAiFinancialDiagnosis_(currentMonth, 'LINE_POSTBACK', false);
     replyLineMessages_(replyToken, [buildDiagnosisFlexMessage_(report)]);
     return;
   }
 }
 
 /**
+ * 處理 LINE 內建快速指令
+ */
+function handleLineCommand_(text, replyToken, userId) {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+
+  if (/^(✍️ 點選開始記帳|📸 拍收據記帳|📊 查看本月帳務摘要|✨ 執行 AI 財務診斷|↩️ 撤銷上一筆記帳)$/.test(normalized)) {
+    // 這是點選圖文選單時自動帶出的 displayText，實際邏輯已由 postback 處理，直接忽略避免重複觸發
+    return true;
+  }
+
+  if (/^(開始記帳|我要記帳|記帳)$/i.test(normalized)) {
+    setUserSessionState_(userId, { mode: 'WAITING_INPUT', inputMode: 'text' }, 600);
+    replyLineMessages_(replyToken, [buildAccountingStartedFlex_('text')]);
+    return true;
+  }
+
+  if (/^(help|說明|指令|選單|功能|\?)$/i.test(normalized)) {
+    const mobileUrl = getMobileDashboardUrl_();
+    const helpMsg = [
+      '📒 【極簡 AI 帳本使用指南】',
+      '',
+      '1️⃣ 點選下方圖文選單【✍️ 點選記帳】或【📸 收據記帳】',
+      '2️⃣ 傳送消費文字（如：午餐 120）或拍下收據照片即可入帳',
+      '（平時直接傳送訊息不會自動記帳，避免誤觸）',
+      '',
+      '📱 點選圖文選單右上角【手機版檢視帳務】即可開啟網頁版帳本：',
+      mobileUrl
+    ].join('\n');
+    replyLineText_(replyToken, helpMsg);
+    return true;
+  }
+
+  if (/^(刪除上一筆|撤銷|撤銷上一筆|取消上一筆|undo)$/i.test(normalized)) {
+    const res = undoLastBatch_();
+    replyLineText_(replyToken, res.message);
+    return true;
+  }
+
+  if (/^修改上一筆\s+(.+)$/i.test(normalized)) {
+    const match = normalized.match(/^修改上一筆\s+(.+)$/i);
+    const res = modifyLastTransactionByInstruction_(match[1]);
+    replyLineText_(replyToken, res.message);
+    return true;
+  }
+
+  if (/^(本月報表|查帳|本月統計|本月摘要|帳務摘要)$/i.test(normalized)) {
+    const currentMonth = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM');
+    const summary = getMonthlySummaryData_(currentMonth);
+    replyLineMessages_(replyToken, [buildMonthlySummaryFlex_(summary)]);
+    return true;
+  }
+
+  if (/^(財務診斷|AI分析|ai診斷|診斷分析|消費診斷)$/i.test(normalized)) {
+    const currentMonth = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM');
+    const report = generateAiFinancialDiagnosis_(currentMonth, 'LINE', false);
+    replyLineMessages_(replyToken, [buildDiagnosisFlexMessage_(report)]);
+    return true;
+  }
+
+  if (/^(分類優化|細分校準|月結校準|調整分類|月度校準)$/i.test(normalized)) {
+    const currentMonth = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM');
+    const report = runMonthlyCategoryAuditAndDiagnosis_(currentMonth, 'LINE_AUDIT');
+    replyLineMessages_(replyToken, [buildDiagnosisFlexMessage_(report)]);
+    return true;
+  }
+
+  if (/^(重試|重試失敗|retry)$/i.test(normalized)) {
+    const retryResult = retryFailedLogs();
+    replyLineText_(
+      replyToken,
+      `🔄 已執行失敗紀錄重試！\n檢查：${retryResult.checked} 筆｜成功修復：${retryResult.recovered} 筆`
+    );
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * ============================================================================
- * 4. 資料零遺失核心：RawLogs 寫入、Google Drive 圖片備份、重試機制
+ * 5. 資料零遺失核心：RawLogs 寫入、Google Drive 圖片備份、重試機制
  * ============================================================================
  */
 function createRawLog_(info) {
@@ -617,12 +1078,6 @@ function updateRawLogStatus_(logId, status, parsedCount, errorMessage, increment
   }
 }
 
-/**
- * 從 LINE Content API 下載圖片並備份至 Google Drive（內建 GAS 頻寬保護與雙軌輕量化機制）
- * 1. 原始圖片完整存入 Google Drive 雲端資料夾（永久保留清晰原圖）
- * 2. 若原圖超過 500KB，自動改取 LINE Preview 輕量流或 Google Drive 壓縮預覽流 (w1280, ~150KB) 送交 Gemini，
- *    大幅降低 85%~95% GAS UrlFetch 傳出頻寬與記憶體消耗，完全避免大圖造成 GAS 逾時或頻寬超標！
- */
 function fetchAndBackupLineImage_(messageId, skipBase64ForDeferred) {
   const config = getConfig();
   if (!config.lineToken) {
@@ -632,9 +1087,7 @@ function fetchAndBackupLineImage_(messageId, skipBase64ForDeferred) {
   const url = `https://api-data.line.me/v2/bot/message/${messageId}/content`;
   const response = UrlFetchApp.fetch(url, {
     method: 'get',
-    headers: {
-      Authorization: 'Bearer ' + config.lineToken
-    },
+    headers: { Authorization: 'Bearer ' + config.lineToken },
     muteHttpExceptions: true
   });
 
@@ -651,7 +1104,6 @@ function fetchAndBackupLineImage_(messageId, skipBase64ForDeferred) {
 
   const folder = ensureDriveFolder_();
   const file = folder.createFile(blob);
-  // 設定為知道連結的人可檢視，方便在試算表與 GitHub Pages 網頁儀表板直接從 Google CDN 讀取預覽（0 GAS 頻寬消耗）
   file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
 
   const fileId = file.getId();
@@ -668,7 +1120,6 @@ function fetchAndBackupLineImage_(messageId, skipBase64ForDeferred) {
     };
   }
 
-  // 檢查圖片大小：若 <= 500KB 直接編碼；若 > 500KB 啟動省頻寬輕量擷取
   const rawBytes = blob.getBytes();
   if (rawBytes.length <= 500 * 1024) {
     return {
@@ -681,7 +1132,6 @@ function fetchAndBackupLineImage_(messageId, skipBase64ForDeferred) {
     };
   }
 
-  // 原圖較大 (>500KB)，優先改抓 LINE 預壓縮圖或 Drive 1280px 輕量縮圖送交 Gemini
   const lightPayload = getLightweightAiImagePayload_(messageId, fileId, config.lineToken);
   if (lightPayload && lightPayload.base64) {
     return {
@@ -694,7 +1144,6 @@ function fetchAndBackupLineImage_(messageId, skipBase64ForDeferred) {
     };
   }
 
-  // 保底使用原圖
   return {
     fileId: fileId,
     fileUrl: fileUrl,
@@ -705,11 +1154,7 @@ function fetchAndBackupLineImage_(messageId, skipBase64ForDeferred) {
   };
 }
 
-/**
- * 取得專供 Gemini 視覺辨識的輕量化圖片（約 120KB~220KB），避免傳送數 MB 原圖消耗 GAS 頻寬配額
- */
 function getLightweightAiImagePayload_(messageId, driveFileId, lineToken) {
-  // 策略 1：優先從 LINE 官方 preview 端點取得輕量圖
   if (messageId && lineToken) {
     try {
       const prevResp = UrlFetchApp.fetch(`https://api-data.line.me/v2/bot/message/${messageId}/content/preview`, {
@@ -724,12 +1169,9 @@ function getLightweightAiImagePayload_(messageId, driveFileId, lineToken) {
           mimeType: b.getContentType() || 'image/jpeg'
         };
       }
-    } catch (e) {
-      console.warn('LINE preview 取得略過，改用 Drive 輕量縮圖:', e);
-    }
+    } catch (e) {}
   }
 
-  // 策略 2：從 Google Drive 內建縮圖引擎取得 w1280 清晰輕量圖（發票文字清晰且檔案極小）
   if (driveFileId) {
     return getDriveCompressedImagePayload_(driveFileId);
   }
@@ -752,9 +1194,7 @@ function getDriveCompressedImagePayload_(driveFileId) {
         mimeType: b.getContentType() || 'image/jpeg'
       };
     }
-  } catch (e) {
-    console.warn('Drive 輕量縮圖取得失敗，回退讀取檔案:', e);
-  }
+  } catch (e) {}
 
   const file = DriveApp.getFileById(driveFileId);
   const blob = file.getBlob();
@@ -764,9 +1204,6 @@ function getDriveCompressedImagePayload_(driveFileId) {
   };
 }
 
-/**
- * 當收到多張連拍照片時，排程 1 分鐘後於背景執行佇列消化
- */
 function scheduleImmediateQueueDrain_() {
   try {
     const triggers = ScriptApp.getProjectTriggers();
@@ -777,9 +1214,7 @@ function scheduleImmediateQueueDrain_() {
         .after(45 * 1000)
         .create();
     }
-  } catch (e) {
-    console.warn('建立單次背景佇列排程略過:', e);
-  }
+  } catch (e) {}
 }
 
 function ensureDriveFolder_() {
@@ -788,26 +1223,16 @@ function ensureDriveFolder_() {
   if (folderId) {
     try {
       return DriveApp.getFolderById(folderId);
-    } catch (e) {
-      console.warn('指定的 DRIVE_FOLDER_ID 無法存取，將自動建立新資料夾:', e);
-    }
+    } catch (e) {}
   }
 
   const folderName = 'LINE_AI_記帳收據備份';
   const folders = DriveApp.getFoldersByName(folderName);
-  let folder;
-  if (folders.hasNext()) {
-    folder = folders.next();
-  } else {
-    folder = DriveApp.createFolder(folderName);
-  }
+  let folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName);
   props.setProperty('DRIVE_FOLDER_ID', folder.getId());
   return folder;
 }
 
-/**
- * 處理單筆 RawLog：呼叫 Gemini 解析 -> 寫入 Transactions -> 更新 RawLogs -> 回覆 LINE
- */
 function processRawLogEntry_(logEntry, replyToken, preloadedImage) {
   try {
     const parseResult = parseAccountingInputWithGemini_({
@@ -828,19 +1253,15 @@ function processRawLogEntry_(logEntry, replyToken, preloadedImage) {
         replyLineText_(
           replyToken,
           parseResult.assistantNote ||
-            '💡 這則訊息看起來不像記帳內容喔！\n您可以傳送如「午餐便當 120」或直接拍下收據照片，或輸入「說明」查看完整指令。'
+            '💡 未能辨識出有效的記帳品項與金額。\n請點選下方圖文選單【✍️ 點選記帳】後輸入如「午餐便當 120」。'
         );
       }
       return { ok: true, count: 0 };
     }
 
-    // 寫入 Transactions 工作表
     const savedBatch = saveTransactionsBatch_(parseResult.items, logEntry);
-
-    // 更新 RawLogs 狀態為 SUCCESS
     updateRawLogStatus_(logEntry.logId, 'SUCCESS', savedBatch.transactions.length, '');
 
-    // 回傳精美 Flex Message 確認小卡至 LINE
     if (replyToken) {
       const flexMsg = buildReceiptConfirmFlex_(savedBatch, parseResult.assistantNote);
       replyLineMessages_(replyToken, [flexMsg]);
@@ -855,21 +1276,13 @@ function processRawLogEntry_(logEntry, replyToken, preloadedImage) {
     if (replyToken) {
       replyLineText_(
         replyToken,
-        [
-          '⚠️ AI 解析暫時忙碌或連線異常，但別擔心！',
-          `✅ 您的原始資料與圖片已安全備份（紀錄編號：${logEntry.logId}）。`,
-          logEntry.driveUrl ? `🖼️ 圖片備份：${logEntry.driveUrl}` : '',
-          '🔄 系統將於背景自動重試，您也可以隨時輸入「重試」立即補登。'
-        ].filter(Boolean).join('\n')
+        `⚠️ AI 解析暫時忙碌，原始紀錄已安全備份（${logEntry.logId}），系統將自動於背景重試補登。`
       );
     }
     return { ok: false, error: errMsg };
   }
 }
 
-/**
- * 自動或手動重試所有狀態為 FAILED（或卡在 PENDING 超過 10 分鐘）的原始紀錄
- */
 function retryFailedLogs() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const rawSheet = ss.getSheetByName(SHEET_RAW_LOGS);
@@ -892,7 +1305,6 @@ function retryFailedLogs() {
 
     if ((status === 'FAILED' || status === 'PENDING') && retryCount < 5) {
       if (checked >= 5) {
-        // 單次排程最多處理 5 筆，避免超過 GAS 執行時間與頻寬限制，若仍有剩餘自動排程下一波
         scheduleImmediateQueueDrain_();
         break;
       }
@@ -933,7 +1345,7 @@ function retryFailedLogs() {
 
 /**
  * ============================================================================
- * 5. Gemini API 呼叫層（支援 Interactions API 結構化輸出與多模態圖片理解）
+ * 6. Gemini API 呼叫層（支援結構化輸出與多模態收據解析）
  * ============================================================================
  */
 function parseAccountingInputWithGemini_(payload) {
@@ -943,15 +1355,13 @@ function parseAccountingInputWithGemini_(payload) {
   }
 
   const cloudSettings = getCloudSettings_();
-  const expenseCats = cloudSettings.expenseCategories && cloudSettings.expenseCategories.length > 0
-    ? cloudSettings.expenseCategories
-    : EXPENSE_CATEGORIES;
   const incomeCats = (cloudSettings.incomeCategories || INCOME_CATEGORIES.join(',')).split(',').map(s => s.trim()).filter(Boolean);
   const paymentMethodsList = (cloudSettings.paymentMethods || '現金,信用卡,LINE Pay,街口支付,悠遊卡/一卡通,銀行轉帳,Apple Pay').split(',').map(s => s.trim()).filter(Boolean);
   const defaultCurrency = cloudSettings.defaultCurrency || 'TWD';
+  const defaultPayment = cloudSettings.defaultPaymentMethod || '現金';
   const splitRuleText = cloudSettings.receiptSplitMode === 'single_total'
-    ? '1. 若為單張收據或發票照片，請將整張收據合併為單筆總金額紀錄（品項請摘要主要購買內容）；若為使用者輸入的多筆不同消費文字則拆分為多筆。'
-    : '1. 若單則文字或單張收據包含多個獨立消費項目（例如「早餐蛋餅45 拿鐵65 捷運30」或發票上的多項商品），請拆分成 items 陣列中的多筆紀錄。';
+    ? '1. 若為單張收據或發票照片，請將整張收據合併為單筆總金額紀錄；若為多筆不同消費文字則拆分為多筆。'
+    : '1. 若單則文字或單張收據包含多個獨立消費項目，請拆分成 items 陣列中的多筆紀錄。';
 
   const todayStr = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd');
   const currentTimeStr = Utilities.formatDate(new Date(), 'Asia/Taipei', 'HH:mm');
@@ -960,46 +1370,38 @@ function parseAccountingInputWithGemini_(payload) {
     .map(cat => `${cat}[${(taxonomyObj[cat] || []).join('/')}]`)
     .join('; ');
 
-  // 極簡化 System Instruction 以大幅降低輸入 Token 消耗，同時確保最細分類精準度
   const systemInstruction = [
-    `台灣記帳AI。今日${todayStr} ${currentTimeStr}。預設幣別${defaultCurrency}。`,
+    `台灣記帳AI。今日${todayStr} ${currentTimeStr}。預設幣別${defaultCurrency}，未提及支付方式時預設為「${defaultPayment}」。`,
     splitRuleText,
-    `支出分類與最細子分類(category>subcategory)請嚴格優先對應：${compactTaxonomyStr}`,
+    `支出分類與子分類(category>subcategory)請優先對應：${compactTaxonomyStr}`,
     `收入分類：${incomeCats.join('/')}`,
-    `支付方式：${paymentMethodsList.join('/')}或未指定。非記帳訊息設isAccounting=false。`
+    `可用支付方式：${paymentMethodsList.join('/')}。非記帳訊息設isAccounting=false。`
   ].join('\n');
 
   const accountingSchema = {
     type: 'object',
     properties: {
-      isAccounting: {
-        type: 'boolean',
-        description: '此訊息或圖片是否包含可記帳的收支資訊'
-      },
-      assistantNote: {
-        type: 'string',
-        description: '給使用者的簡短貼心備註或發票摘要（繁體中文，30字內）'
-      },
+      isAccounting: { type: 'boolean' },
+      assistantNote: { type: 'string' },
       items: {
         type: 'array',
-        description: '解析出的所有收支明細清單',
         items: {
           type: 'object',
           properties: {
-            date: { type: 'string', description: '消費日期 YYYY-MM-DD' },
-            time: { type: 'string', description: '消費時間 HH:mm' },
-            type: { type: 'string', enum: ['支出', '收入'], description: '支出或收入' },
-            category: { type: 'string', description: '主分類名稱' },
-            subcategory: { type: 'string', description: '子分類名稱（如：外食、咖啡、超商、計程車）' },
-            item: { type: 'string', description: '品項或消費內容說明' },
-            amount: { type: 'number', description: '金額（正數數字）' },
-            currency: { type: 'string', description: '幣別，預設 TWD' },
-            paymentMethod: { type: 'string', description: '支付方式' },
-            merchant: { type: 'string', description: '店家名稱或交易對象，未知填空字串' },
-            invoiceNo: { type: 'string', description: '發票號碼（如 AB-12345678），無則填空字串' },
-            note: { type: 'string', description: '補充備註，無則填空字串' }
+            date: { type: 'string' },
+            time: { type: 'string' },
+            type: { type: 'string', enum: ['支出', '收入'] },
+            category: { type: 'string' },
+            subcategory: { type: 'string' },
+            item: { type: 'string' },
+            amount: { type: 'number' },
+            currency: { type: 'string' },
+            paymentMethod: { type: 'string' },
+            merchant: { type: 'string' },
+            invoiceNo: { type: 'string' },
+            note: { type: 'string' }
           },
-          required: ['date', 'type', 'category', 'item', 'amount', 'currency', 'paymentMethod']
+          required: ['date', 'type', 'category', 'subcategory', 'item', 'amount', 'currency', 'paymentMethod']
         }
       }
     },
@@ -1010,7 +1412,7 @@ function parseAccountingInputWithGemini_(payload) {
   if (payload.messageType === 'image' && payload.preloadedImage && payload.preloadedImage.base64) {
     inputParts.push({
       type: 'text',
-      text: '請辨識這張收據/發票/明細照片中的所有消費項目、日期、店家、發票號碼與金額，並轉換為結構化記帳明細。'
+      text: '請辨識這張收據/發票照片中的所有消費項目、日期、店家、發票號碼與金額，並轉換為結構化記帳明細。'
     });
     inputParts.push({
       type: 'image',
@@ -1025,7 +1427,7 @@ function parseAccountingInputWithGemini_(payload) {
   }
 
   const responseText = callGeminiInteractionsApi_({
-    model: config.parseModel,
+    model: cloudSettings.parseModel || config.parseModel,
     systemInstruction: systemInstruction,
     input: inputParts,
     schema: accountingSchema
@@ -1034,9 +1436,6 @@ function parseAccountingInputWithGemini_(payload) {
   return JSON.parse(responseText);
 }
 
-/**
- * 通用 Gemini Interactions API 呼叫函式（支援 JSON Schema 結構化輸出）
- */
 function callGeminiInteractionsApi_(options) {
   const config = getConfig();
   if (!config.geminiApiKey) {
@@ -1077,8 +1476,6 @@ function callGeminiInteractionsApi_(options) {
   }
 
   const parsed = JSON.parse(rawBody);
-
-  // 優先讀取 output_text，或從 steps 中擷取最後一個 model_output 的文字
   if (typeof parsed.output_text === 'string' && parsed.output_text.trim()) {
     return parsed.output_text.trim();
   }
@@ -1102,7 +1499,7 @@ function callGeminiInteractionsApi_(options) {
 
 /**
  * ============================================================================
- * 6. 試算表 Transactions 讀寫與批次管理（支援單筆/多筆寫入、撤銷、修改）
+ * 7. 試算表 Transactions 讀寫與批次管理
  * ============================================================================
  */
 function saveTransactionsBatch_(items, logEntry) {
@@ -1116,6 +1513,7 @@ function saveTransactionsBatch_(items, logEntry) {
       txSheet = ss.getSheetByName(SHEET_TRANSACTIONS);
     }
 
+    const cloudSettings = getCloudSettings_();
     const now = new Date();
     const createdAt = Utilities.formatDate(now, 'Asia/Taipei', 'yyyy-MM-dd HH:mm:ss');
     const defaultTime = Utilities.formatDate(now, 'Asia/Taipei', 'HH:mm');
@@ -1133,11 +1531,11 @@ function saveTransactionsBatch_(items, logEntry) {
         time: item.time || defaultTime,
         type: item.type === '收入' ? '收入' : '支出',
         category: item.category || (item.type === '收入' ? '其他收入' : '其他支出'),
-        subcategory: item.subcategory || '',
+        subcategory: item.subcategory || '一般',
         item: item.item || '未命名項目',
         amount: Math.abs(Number(item.amount) || 0),
-        currency: item.currency || 'TWD',
-        paymentMethod: item.paymentMethod || '未指定',
+        currency: item.currency || cloudSettings.defaultCurrency || 'TWD',
+        paymentMethod: item.paymentMethod || cloudSettings.defaultPaymentMethod || '現金',
         merchant: item.merchant || '',
         invoiceNo: item.invoiceNo || '',
         imageUrl: (logEntry && logEntry.driveUrl) ? logEntry.driveUrl : '',
@@ -1186,9 +1584,6 @@ function saveTransactionsBatch_(items, logEntry) {
   }
 }
 
-/**
- * 撤銷最近一個批次的記帳紀錄（軟刪除 Status = deleted，保留完整稽核軌跡）
- */
 function undoLastBatch_() {
   const lock = LockService.getScriptLock();
   lock.waitLock(15000);
@@ -1209,7 +1604,7 @@ function undoLastBatch_() {
     }
 
     if (!targetBatchId) {
-      return { ok: false, message: '找不到任何有效（active）的記帳紀錄可撤銷。' };
+      return { ok: false, message: '找不到任何有效的記帳紀錄可撤銷。' };
     }
 
     return deleteTransactionsByBatchId_(targetBatchId);
@@ -1235,12 +1630,12 @@ function deleteTransactionsByBatchId_(batchId) {
   SpreadsheetApp.flush();
 
   if (deletedItems.length === 0) {
-    return { ok: false, message: `批次 ${batchId} 已撤銷過或不存在。` };
+    return { ok: false, message: `此筆記帳已撤銷過或不存在。` };
   }
 
   return {
     ok: true,
-    message: `🗑️ 已成功撤銷 ${deletedItems.length} 筆紀錄：\n• ${deletedItems.reverse().join('\n• ')}`
+    message: `↩️ 已撤銷 ${deletedItems.length} 筆紀錄：\n• ${deletedItems.reverse().join('\n• ')}`
   };
 }
 
@@ -1259,7 +1654,7 @@ function deleteTransactionById_(txId) {
         SpreadsheetApp.flush();
         return {
           ok: true,
-          message: `🗑️ 已撤銷紀錄：${data[i][7]} ($${data[i][8]})`
+          message: `↩️ 已撤銷紀錄：${data[i][7]} ($${data[i][8]})`
         };
       }
     }
@@ -1269,9 +1664,6 @@ function deleteTransactionById_(txId) {
   }
 }
 
-/**
- * 支援「修改上一筆 金額 150」或「修改上一筆 分類 休閒娛樂」
- */
 function modifyLastTransactionByInstruction_(instruction) {
   const lock = LockService.getScriptLock();
   lock.waitLock(15000);
@@ -1296,8 +1688,6 @@ function modifyLastTransactionByInstruction_(instruction) {
 
     const row = data[targetRowIndex];
     const rowNum = targetRowIndex + 1;
-
-    // 簡易規則匹配：金額 / 分類 / 品項 / 支付方式 / 日期
     const parts = instruction.trim().split(/\s+/);
     if (parts.length >= 2) {
       const field = parts[0];
@@ -1308,30 +1698,30 @@ function modifyLastTransactionByInstruction_(instruction) {
         if (!isNaN(num) && num > 0) {
           txSheet.getRange(rowNum, 9).setValue(num);
           SpreadsheetApp.flush();
-          return { ok: true, message: `✏️ 已將「${row[7]}」金額由 $${row[8]} 修改為 $${num}！` };
+          return { ok: true, message: `✏️ 已將「${row[7]}」金額修改為 $${num}` };
         }
       } else if (/^(分類|類別|category)$/i.test(field)) {
         txSheet.getRange(rowNum, 6).setValue(val);
         SpreadsheetApp.flush();
-        return { ok: true, message: `✏️ 已將「${row[7]}」分類由「${row[5]}」修改為「${val}」！` };
+        return { ok: true, message: `✏️ 已將「${row[7]}」分類修改為「${val}」` };
       } else if (/^(品項|項目|名稱|說明|item)$/i.test(field)) {
         txSheet.getRange(rowNum, 8).setValue(val);
         SpreadsheetApp.flush();
-        return { ok: true, message: `✏️ 已將品項名稱由「${row[7]}」修改為「${val}」！` };
+        return { ok: true, message: `✏️ 已將品項修改為「${val}」` };
       } else if (/^(支付|支付方式|付款方式)$/i.test(field)) {
         txSheet.getRange(rowNum, 11).setValue(val);
         SpreadsheetApp.flush();
-        return { ok: true, message: `✏️ 已將「${row[7]}」支付方式修改為「${val}」！` };
+        return { ok: true, message: `✏️ 已將支付方式修改為「${val}」` };
       } else if (/^(日期|date)$/i.test(field)) {
         txSheet.getRange(rowNum, 3).setValue(val);
         SpreadsheetApp.flush();
-        return { ok: true, message: `✏️ 已將「${row[7]}」日期修改為「${val}」！` };
+        return { ok: true, message: `✏️ 已將日期修改為「${val}」` };
       }
     }
 
     return {
       ok: false,
-      message: '💡 修改格式範例：\n• 修改上一筆 金額 150\n• 修改上一筆 分類 休閒娛樂\n• 修改上一筆 品項 超商咖啡\n• 修改上一筆 支付 LINE Pay'
+      message: '💡 修改範例：\n• 修改上一筆 金額 150\n• 修改上一筆 分類 休閒娛樂\n• 修改上一筆 品項 超商咖啡'
     };
   } finally {
     lock.releaseLock();
@@ -1340,7 +1730,7 @@ function modifyLastTransactionByInstruction_(instruction) {
 
 /**
  * ============================================================================
- * 7. 試算表資料讀取與 AI 財務診斷分析引擎 (Gemini 4 Argon / 3.8 Flash)
+ * 8. 試算表資料讀取與 AI 財務診斷分析引擎
  * ============================================================================
  */
 function getMonthlySummaryData_(yearMonth) {
@@ -1348,12 +1738,14 @@ function getMonthlySummaryData_(yearMonth) {
   const txSheet = ss.getSheetByName(SHEET_TRANSACTIONS);
   const budgetSheet = ss.getSheetByName(SHEET_BUDGETS);
 
+  const filterMonth = (yearMonth && yearMonth !== 'ALL') ? String(yearMonth).trim() : '';
+
   const budgetsMap = {};
   let totalMonthlyBudget = 0;
   if (budgetSheet && budgetSheet.getLastRow() > 1) {
     const bData = budgetSheet.getDataRange().getValues();
     for (let i = 1; i < bData.length; i++) {
-      const cat = String(bData[i][0]);
+      const cat = String(bData[i][0] || '').trim();
       const amt = Number(bData[i][1] || 0);
       const group = String(bData[i][2] || '必要支出 (Needs)');
       if (cat) {
@@ -1379,15 +1771,14 @@ function getMonthlySummaryData_(yearMonth) {
       const status = String(row[15] || 'active');
       if (status !== 'active') continue;
 
-      const rawDate = row[2];
-      const dateStr = formatDateCell_(rawDate);
-      if (yearMonth && !dateStr.startsWith(yearMonth)) continue;
+      const dateStr = formatDateCell_(row[2]);
+      if (filterMonth && !dateStr.startsWith(filterMonth)) continue;
 
       const type = String(row[4] || '支出');
       const category = String(row[5] || '其他支出').trim();
-      const subcategory = String(row[6] || '一般細項').trim() || '一般細項';
+      const subcategory = String(row[6] || '一般').trim() || '一般';
       const amount = Number(row[8] || 0);
-      const payment = String(row[10] || '未指定');
+      const payment = String(row[10] || '現金');
       const merchant = String(row[11] || '');
 
       const txObj = {
@@ -1461,7 +1852,6 @@ function getMonthlySummaryData_(yearMonth) {
     }
   }
 
-  // 補齊有設定預算但本月尚無支出的分類
   Object.keys(budgetsMap).forEach(cat => {
     if (!categoryStats[cat]) {
       categoryStats[cat] = {
@@ -1493,11 +1883,12 @@ function getMonthlySummaryData_(yearMonth) {
         subBreakdown: subBreakdown
       };
     })
-    .sort((a, b) => b.amount - a.amount);
+    .sort((a, b) => (b.amount - a.amount) || (b.budget - a.budget));
 
   const subcategoryList = Object.values(subcategoryStats)
     .map(s => ({
       ...s,
+      pctOfTotal: totalExpense > 0 ? Number(((s.amount / totalExpense) * 100).toFixed(1)) : 0,
       shareOfTotalPct: totalExpense > 0 ? Number(((s.amount / totalExpense) * 100).toFixed(1)) : 0
     }))
     .sort((a, b) => b.amount - a.amount);
@@ -1522,15 +1913,7 @@ function getMonthlySummaryData_(yearMonth) {
   };
 }
 
-/**
- * ============================================================================
- * 7B. 極致省 Token 壓縮引擎 + 每月一次 AI 最細分類校準與消費狀況深度診斷
- * ============================================================================
- * 將原本冗長的 JSON 交易陣列壓縮為「預聚合統計 + 去重精簡管線表 (Pipe Digest)」，
- * 減少約 75%~82% 的輸入 Token，同時讓 Gemini 掌握 100% 消費細節！
- */
 function buildUltraCompactDigest_(summary, includeTxIdsForAudit) {
-  // 1. 主分類與細分類精簡摘要: "餐飲食品:9680/10000[外食6200,精品與超商咖啡2130,手搖飲1350]"
   const catLines = (summary.categories || [])
     .filter(c => c.amount > 0 || c.budget > 0)
     .map(c => {
@@ -1539,7 +1922,6 @@ function buildUltraCompactDigest_(summary, includeTxIdsForAudit) {
     })
     .join(' | ');
 
-  // 2. 若不需逐筆改寫分類（純診斷），將相同品項合併計算頻次與總額，極致節省 Token
   let txCompactLines = '';
   if (includeTxIdsForAudit) {
     txCompactLines = (summary.transactions || [])
@@ -1562,7 +1944,6 @@ function buildUltraCompactDigest_(summary, includeTxIdsForAudit) {
       .join('\n');
   }
 
-  const rawJsonChars = JSON.stringify(summary.transactions || []).length || 1;
   const compactText = [
     `M:${summary.yearMonth} Inc:${summary.totalIncome} Exp:${summary.totalExpense} Sav:${summary.netSavings}(${summary.savingsRate}%) Bud:${summary.totalMonthlyBudget}(${summary.budgetUsageRate}%)`,
     `CATS: ${catLines}`,
@@ -1570,21 +1951,13 @@ function buildUltraCompactDigest_(summary, includeTxIdsForAudit) {
     includeTxIdsForAudit ? `TX(TxID|Cat|Subcat|Item|Merch|Amt):\n${txCompactLines}` : `ITEMS(Cat>Subcat|Item|Merch|Freq|Total):\n${txCompactLines}`
   ].join('\n');
 
-  const compactChars = compactText.length;
-  const savedPct = rawJsonChars > compactChars
-    ? Math.min(88, Math.max(45, Math.round(((rawJsonChars - compactChars) / rawJsonChars) * 100)))
-    : 72;
-
   return {
     digestText: compactText,
-    estimatedInputTokens: Math.max(120, Math.round(compactChars / 3.2)),
-    tokenSavedPct: savedPct
+    estimatedInputTokens: Math.max(120, Math.round(compactText.length / 3.2)),
+    tokenSavedPct: 80
   };
 }
 
-/**
- * 執行 AI 財務與消費狀況診斷（支援選擇是否同時執行「每月一次最細分類校準」）
- */
 function generateAiFinancialDiagnosis_(yearMonth, triggerSource, runCategoryCalibration) {
   if (runCategoryCalibration) {
     return runMonthlyCategoryAuditAndDiagnosis_(yearMonth, triggerSource);
@@ -1593,20 +1966,19 @@ function generateAiFinancialDiagnosis_(yearMonth, triggerSource, runCategoryCali
   const targetMonth = yearMonth || Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM');
   const summary = getMonthlySummaryData_(targetMonth);
   const config = getConfig();
+  const cloudSettings = getCloudSettings_();
   const compact = buildUltraCompactDigest_(summary, false);
 
-  const diagnosisSchema = getDiagnosisAndAuditSchema_(false);
-
   const systemInstruction = [
-    '你是台灣資深CFP財務顧問與消費行為分析師。請根據極簡壓縮帳務數據進行深度消費狀況診斷（繁體中文）。',
-    '重點：1.分析主分類與最細子分類(Subcategory)佔比與消費頻次；2.檢視50/30/20法則；3.抓出拿鐵因子與超支預警；4.給出具體省錢處方。'
+    '你是台灣資深CFP財務顧問。請根據帳務摘要進行簡潔精準的消費診斷（繁體中文）。',
+    '重點：1.分析主分類與子分類佔比；2.檢視50/30/20法則；3.抓出拿鐵因子與超支預警；4.給出具體省錢建議。'
   ].join('\n');
 
   const responseText = callGeminiInteractionsApi_({
-    model: config.diagnosisModel,
+    model: cloudSettings.diagnosisModel || config.diagnosisModel,
     systemInstruction: systemInstruction,
     input: [{ type: 'text', text: compact.digestText }],
-    schema: diagnosisSchema
+    schema: getDiagnosisAndAuditSchema_(false)
   });
 
   const reportObj = JSON.parse(responseText);
@@ -1614,20 +1986,11 @@ function generateAiFinancialDiagnosis_(yearMonth, triggerSource, runCategoryCali
   reportObj.generatedAt = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd HH:mm:ss');
   reportObj.totalIncome = summary.totalIncome;
   reportObj.totalExpense = summary.totalExpense;
-  reportObj.tokenStats = {
-    estimatedInputTokens: compact.estimatedInputTokens,
-    tokenSavedPct: compact.tokenSavedPct,
-    reclassifiedCount: 0,
-    mode: '快速省Token消費診斷'
-  };
 
   saveAiReportToSheet_(reportObj, triggerSource || 'WEB');
   return reportObj;
 }
 
-/**
- * 【每月執行一次】使用 Gemini 將記帳分類與子分類校準至最細，並同步產出月度消費狀況深度報告
- */
 function runMonthlyCategoryAuditAndDiagnosis_(yearMonth, triggerSource) {
   const targetMonth = yearMonth || Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM');
   const summary = getMonthlySummaryData_(targetMonth);
@@ -1642,21 +2005,19 @@ function runMonthlyCategoryAuditAndDiagnosis_(yearMonth, triggerSource) {
 
   const systemInstruction = [
     '你是台灣個人記帳分類精細化專家與CFP財務分析師（繁體中文）。',
-    '任務1【月度最細分類校準】：檢視TX清單，若任何交易的Category或Subcategory不夠精確、過於籠統（如僅寫「外食」、「一般細項」或空白）或歸類錯誤，請在reclassifications陣列輸出修正後的最細分類(newCategory與newSubcategory)，讓後續統計達到最精確！若發現值得長期新增的精細子分類，請放入newTaxonomyAdditions。',
+    '任務1【月度最細分類校準】：檢視TX清單，若任何交易的Category或Subcategory不夠精確或歸類錯誤，請在reclassifications陣列輸出修正後的最細分類(newCategory與newSubcategory)。',
     `現有分類樹參考：${compactTaxStr}`,
-    '任務2【深度消費狀況分析】：剖析使用者本月的消費結構、細分類排行洞察(subcategoryInsights)、固定vs彈性支出、拿鐵因子與具體改善建議。'
+    '任務2【深度消費狀況分析】：剖析使用者本月的消費結構與具體改善建議。'
   ].join('\n');
 
   const responseText = callGeminiInteractionsApi_({
-    model: config.diagnosisModel,
+    model: cloudSettings.diagnosisModel || config.diagnosisModel,
     systemInstruction: systemInstruction,
     input: [{ type: 'text', text: compact.digestText }],
     schema: getDiagnosisAndAuditSchema_(true)
   });
 
   const resultObj = JSON.parse(responseText);
-
-  // 將 Gemini 校準後的最細分類直接批次寫回 Transactions 工作表與 Settings 分類樹
   const auditStats = applyMonthlyReclassifications_(
     resultObj.reclassifications || [],
     resultObj.newTaxonomyAdditions || [],
@@ -1667,13 +2028,7 @@ function runMonthlyCategoryAuditAndDiagnosis_(yearMonth, triggerSource) {
   resultObj.generatedAt = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd HH:mm:ss');
   resultObj.totalIncome = summary.totalIncome;
   resultObj.totalExpense = summary.totalExpense;
-  resultObj.tokenStats = {
-    estimatedInputTokens: compact.estimatedInputTokens,
-    tokenSavedPct: compact.tokenSavedPct,
-    reclassifiedCount: auditStats.reclassifiedCount,
-    addedSubcategoriesCount: auditStats.addedSubcategoriesCount,
-    mode: '月度最細分類校準 + 深度消費分析'
-  };
+  resultObj.reclassifiedCount = auditStats.reclassifiedCount;
 
   saveAiReportToSheet_(resultObj, triggerSource || 'MONTHLY_AUDIT');
   return resultObj;
@@ -1681,17 +2036,19 @@ function runMonthlyCategoryAuditAndDiagnosis_(yearMonth, triggerSource) {
 
 function getDiagnosisAndAuditSchema_(includeAuditFields) {
   const props = {
-    healthScore: { type: 'integer', description: '0-100財務健康評分' },
-    healthGrade: { type: 'string', description: '評級標籤如：極佳(S)、穩健(A+)、需留意(B)' },
-    executiveSummary: { type: 'string', description: '120字內整體收支與消費狀況總評' },
+    healthScore: { type: 'integer' },
+    healthGrade: { type: 'string' },
+    executiveSummary: { type: 'string' },
     consumptionStructureAnalysis: {
       type: 'object',
       properties: {
-        fixedVsFlexibleComment: { type: 'string', description: '固定必要支出 vs 彈性可調控支出的結構分析' },
-        spendingRhythmComment: { type: 'string', description: '平日與週末、高頻消費時段與支付工具習慣分析' },
-        topSubcategoryInsight: { type: 'string', description: '針對最細子分類(Subcategory)排行榜的精準洞察' }
+        overallStatus: { type: 'string' },
+        latteFactorAnalysis: { type: 'string' },
+        weekdayVsWeekend: { type: 'string' },
+        topConcentration: { type: 'string' },
+        nextMonthBudgetAdvice: { type: 'string' }
       },
-      required: ['fixedVsFlexibleComment', 'spendingRhythmComment', 'topSubcategoryInsight']
+      required: ['overallStatus', 'latteFactorAnalysis', 'weekdayVsWeekend', 'topConcentration', 'nextMonthBudgetAdvice']
     },
     rule503020: {
       type: 'object',
@@ -1742,21 +2099,19 @@ function getDiagnosisAndAuditSchema_(includeAuditFields) {
   if (includeAuditFields) {
     props.reclassifications = {
       type: 'array',
-      description: '需要調整為更精細主分類或子分類的交易清單',
       items: {
         type: 'object',
         properties: {
-          txId: { type: 'string', description: '交易TxID' },
-          newCategory: { type: 'string', description: '校準後的主分類' },
-          newSubcategory: { type: 'string', description: '校準後的最細子分類' },
-          reason: { type: 'string', description: '簡短調整原因(15字內)' }
+          txId: { type: 'string' },
+          newCategory: { type: 'string' },
+          newSubcategory: { type: 'string' },
+          reason: { type: 'string' }
         },
         required: ['txId', 'newCategory', 'newSubcategory', 'reason']
       }
     };
     props.newTaxonomyAdditions = {
       type: 'array',
-      description: '建議納入系統分類樹的新增最細子分類',
       items: {
         type: 'object',
         properties: {
@@ -1776,9 +2131,6 @@ function getDiagnosisAndAuditSchema_(includeAuditFields) {
   };
 }
 
-/**
- * 將 Gemini 校準後的最細分類批次寫回 Google Sheet `Transactions` 與 `Settings`
- */
 function applyMonthlyReclassifications_(reclassifications, newTaxonomyAdditions, targetMonth) {
   const lock = LockService.getScriptLock();
   lock.waitLock(15000);
@@ -1805,7 +2157,6 @@ function applyMonthlyReclassifications_(reclassifications, newTaxonomyAdditions,
       }
     }
 
-    // 同步擴充 Settings 中的 subcategoryTaxonomy 分類樹並記錄最後校準月份
     const cloudSettings = getCloudSettings_();
     const taxObj = cloudSettings.subcategoryTaxonomyObj || JSON.parse(JSON.stringify(DEFAULT_SUBCATEGORY_TAXONOMY));
     let addedSubcategoriesCount = 0;
@@ -1840,31 +2191,22 @@ function applyMonthlyReclassifications_(reclassifications, newTaxonomyAdditions,
   }
 }
 
-/**
- * 支援在網頁儀表板向 Gemini 自由提問試算表帳務問題（同樣使用超精簡 Digest 降低 Token）
- */
 function askGeminiAboutFinances_(question, yearMonth) {
   const targetMonth = yearMonth || Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM');
   const summary = getMonthlySummaryData_(targetMonth);
   const config = getConfig();
+  const cloudSettings = getCloudSettings_();
   const compact = buildUltraCompactDigest_(summary, false);
 
   const answer = callGeminiInteractionsApi_({
-    model: config.parseModel,
-    systemInstruction: '你是使用者的專屬AI財務分析師。請根據提供的精簡帳務摘要，精準有條理地回答問題並引用具體細分類與金額（繁體中文）。',
-    input: [
-      {
-        type: 'text',
-        text: `${compact.digestText}\n\n問題：${question}`
-      }
-    ]
+    model: cloudSettings.parseModel || config.parseModel,
+    systemInstruction: '你是使用者的專屬AI財務分析師。請根據提供的帳務摘要，簡潔有條理地回答問題並引用具體分類與金額（繁體中文）。',
+    input: [{ type: 'text', text: `${compact.digestText}\n\n問題：${question}` }]
   });
 
   return {
     ok: true,
-    answer: answer,
-    estimatedInputTokens: compact.estimatedInputTokens,
-    tokenSavedPct: compact.tokenSavedPct
+    answer: answer
   };
 }
 
@@ -1897,7 +2239,7 @@ function saveAiReportToSheet_(reportObj, triggerSource) {
 
 /**
  * ============================================================================
- * 8. 網頁儀表板 API 路由 (供內建 HtmlService 與 GitHub Pages 雲端網頁呼叫)
+ * 9. 網頁儀表板 API 路由與跨裝置設定讀寫 (Google Sheets Settings & Budgets)
  * ============================================================================
  */
 function getDashboardBootstrapData(yearMonth) {
@@ -1922,7 +2264,8 @@ function getDashboardBootstrapData(yearMonth) {
       hasDashboardToken: Boolean(config.dashboardToken),
       driveFolderId: config.driveFolderId || '',
       spreadsheetUrl: ss ? ss.getUrl() : '',
-      webAppUrl: config.webAppUrl || ''
+      webAppUrl: config.webAppUrl || '',
+      mobileDashboardUrl: getMobileDashboardUrl_()
     }
   };
 }
@@ -1931,11 +2274,19 @@ function handleDashboardApi_(action, params) {
   try {
     const config = getConfig();
     if (config.dashboardToken && params.token !== config.dashboardToken) {
-      return jsonResponse_({ ok: false, error: '通行碼 (DASHBOARD_ACCESS_TOKEN) 驗證失敗' });
+      return jsonResponse_({ ok: false, error: '安全通行碼 (DASHBOARD_ACCESS_TOKEN) 驗證失敗' });
     }
 
     if (action === 'bootstrap') {
       return jsonResponse_(getDashboardBootstrapData(params.yearMonth));
+    }
+
+    if (action === 'setup_rich_menu') {
+      if (params.githubPagesUrl) {
+        saveCloudSettingsAndBudgets_({ settings: { githubPagesUrl: String(params.githubPagesUrl).trim() } });
+      }
+      const res = setupLineRichMenu(params.imageBase64 || '', params.imageMimeType || 'image/png');
+      return jsonResponse_(res);
     }
 
     if (action === 'run_diagnosis') {
@@ -1966,7 +2317,11 @@ function handleDashboardApi_(action, params) {
     if (action === 'add_manual_tx') {
       const item = params.transaction || {};
       const saved = saveTransactionsBatch_([item], { logId: 'WEB-MANUAL', driveUrl: '' });
-      return jsonResponse_({ ok: true, batch: saved });
+      return jsonResponse_({
+        ok: true,
+        batch: saved,
+        summary: getMonthlySummaryData_(params.yearMonth)
+      });
     }
 
     if (action === 'parse_and_save') {
@@ -1991,7 +2346,7 @@ function handleDashboardApi_(action, params) {
       const logEntry = createRawLog_({
         userId: 'CLOUD-WEB-DASHBOARD',
         messageType: preloadedImage ? 'image' : 'text',
-        rawText: params.rawText || (preloadedImage ? '[雲端儀表板上傳收據]' : ''),
+        rawText: params.rawText || (preloadedImage ? '[網頁上傳收據]' : ''),
         driveFileId: driveFileId,
         driveUrl: driveUrl
       });
@@ -2033,7 +2388,7 @@ function handleDashboardApi_(action, params) {
 }
 
 /**
- * 讀取 Settings 與 Budgets 工作表中的跨裝置設定
+ * 讀取 Settings 與 Budgets 工作表中的跨裝置設定（確保前後端欄位名稱 100% 對齊）
  */
 function getCloudSettings_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -2044,17 +2399,23 @@ function getCloudSettings_() {
   }
 
   const out = {
-    accountBookName: '我的 AI 智慧帳本',
+    accountBookName: '極簡雲端帳本',
     defaultCurrency: 'TWD',
+    currency: 'TWD',
+    defaultPaymentMethod: '現金',
     parseModel: DEFAULT_PARSE_MODEL,
+    aiParseModel: DEFAULT_PARSE_MODEL,
     diagnosisModel: DEFAULT_DIAGNOSIS_MODEL,
+    aiDiagnosisModel: DEFAULT_DIAGNOSIS_MODEL,
     receiptSplitMode: 'split_items',
+    lineTriggerMode: 'menu_first',
+    githubPagesUrl: DEFAULT_GITHUB_PAGES_URL,
+    monthlyAutoAudit: 'ON',
     paymentMethods: '現金,信用卡,LINE Pay,街口支付,悠遊卡/一卡通,銀行轉帳,Apple Pay',
     incomeCategories: INCOME_CATEGORIES.join(','),
-    autoSyncSeconds: '60',
-    budgetAlertThresholdPct: '85',
     subcategoryTaxonomy: JSON.stringify(DEFAULT_SUBCATEGORY_TAXONOMY),
     lastMonthlyAuditMonth: '',
+    activeRichMenuId: '',
     expenseCategories: EXPENSE_CATEGORIES.slice()
   };
 
@@ -2062,15 +2423,30 @@ function getCloudSettings_() {
     const data = settingsSheet.getDataRange().getValues();
     for (let i = 1; i < data.length; i++) {
       const k = String(data[i][0] || '').trim();
-      const v = String(data[i][1] || '').trim();
-      if (k) out[k] = v;
+      const v = String(data[i][1] !== undefined && data[i][1] !== null ? data[i][1] : '').trim();
+      if (k && v !== '[object Object]') {
+        out[k] = v;
+      }
     }
   }
 
+  // 雙向別名對齊，確保任何版本的前端都能讀取到正確設定值
+  out.currency = out.currency || out.defaultCurrency || 'TWD';
+  out.defaultCurrency = out.currency;
+  out.aiParseModel = out.aiParseModel || out.parseModel || DEFAULT_PARSE_MODEL;
+  out.parseModel = out.aiParseModel;
+  out.aiDiagnosisModel = out.aiDiagnosisModel || out.diagnosisModel || DEFAULT_DIAGNOSIS_MODEL;
+  out.diagnosisModel = out.aiDiagnosisModel;
+
   try {
-    out.subcategoryTaxonomyObj = JSON.parse(out.subcategoryTaxonomy || '{}');
+    const parsedTax = typeof out.subcategoryTaxonomy === 'object'
+      ? out.subcategoryTaxonomy
+      : JSON.parse(out.subcategoryTaxonomy || '{}');
+    out.subcategoryTaxonomyObj = (parsedTax && Object.keys(parsedTax).length > 0)
+      ? parsedTax
+      : JSON.parse(JSON.stringify(DEFAULT_SUBCATEGORY_TAXONOMY));
   } catch (e) {
-    out.subcategoryTaxonomyObj = DEFAULT_SUBCATEGORY_TAXONOMY;
+    out.subcategoryTaxonomyObj = JSON.parse(JSON.stringify(DEFAULT_SUBCATEGORY_TAXONOMY));
   }
 
   const budgetSheet = ss.getSheetByName(SHEET_BUDGETS);
@@ -2080,9 +2456,11 @@ function getCloudSettings_() {
     for (let i = 1; i < bData.length; i++) {
       const cat = String(bData[i][0] || '').trim();
       if (cat) {
+        const amt = Number(bData[i][1] || 0);
         budgetsList.push({
           category: cat,
-          budget: Number(bData[i][1] || 0),
+          budget: amt,
+          monthlyBudget: amt,
           ruleGroup: String(bData[i][2] || '必要支出 (Needs)'),
           note: String(bData[i][3] || '')
         });
@@ -2093,6 +2471,24 @@ function getCloudSettings_() {
     out.expenseCategories = budgetsList.map(b => b.category);
   }
   out.budgetsList = budgetsList;
+
+  // 同時提供 settings 子物件，保持與前端結構 100% 相容
+  out.settings = {
+    accountBookName: out.accountBookName,
+    currency: out.currency,
+    defaultCurrency: out.defaultCurrency,
+    defaultPaymentMethod: out.defaultPaymentMethod,
+    aiParseModel: out.aiParseModel,
+    parseModel: out.parseModel,
+    aiDiagnosisModel: out.aiDiagnosisModel,
+    diagnosisModel: out.diagnosisModel,
+    receiptSplitMode: out.receiptSplitMode,
+    lineTriggerMode: out.lineTriggerMode,
+    githubPagesUrl: out.githubPagesUrl,
+    monthlyAutoAudit: out.monthlyAutoAudit,
+    activeRichMenuId: out.activeRichMenuId,
+    subcategoryTaxonomy: out.subcategoryTaxonomyObj
+  };
 
   return out;
 }
@@ -2115,34 +2511,47 @@ function saveCloudSettingsAndBudgets_(params) {
         settingsSheet = ss.getSheetByName(SHEET_SETTINGS);
       }
 
+      const normalizedSettings = Object.assign({}, params.settings);
+      if (normalizedSettings.currency) normalizedSettings.defaultCurrency = normalizedSettings.currency;
+      if (normalizedSettings.defaultCurrency) normalizedSettings.currency = normalizedSettings.defaultCurrency;
+      if (normalizedSettings.aiParseModel) normalizedSettings.parseModel = normalizedSettings.aiParseModel;
+      if (normalizedSettings.parseModel) normalizedSettings.aiParseModel = normalizedSettings.parseModel;
+      if (normalizedSettings.aiDiagnosisModel) normalizedSettings.diagnosisModel = normalizedSettings.aiDiagnosisModel;
+      if (normalizedSettings.diagnosisModel) normalizedSettings.aiDiagnosisModel = normalizedSettings.diagnosisModel;
+
       const existing = settingsSheet.getDataRange().getValues();
       const keyRowMap = {};
       for (let i = 1; i < existing.length; i++) {
         keyRowMap[String(existing[i][0])] = i + 1;
       }
 
-      Object.keys(params.settings).forEach(k => {
-        if (k === 'budgetsList' || k === 'expenseCategories') return;
-        const val = String(params.settings[k] !== undefined ? params.settings[k] : '');
+      Object.keys(normalizedSettings).forEach(k => {
+        if (k === 'budgetsList' || k === 'expenseCategories' || k === 'settings' || k === 'subcategoryTaxonomyObj') return;
+        const rawVal = normalizedSettings[k];
+        if (rawVal === undefined) return;
+        const val = (typeof rawVal === 'object' && rawVal !== null)
+          ? JSON.stringify(rawVal)
+          : String(rawVal);
+
         if (keyRowMap[k]) {
           settingsSheet.getRange(keyRowMap[k], 2).setValue(val);
           settingsSheet.getRange(keyRowMap[k], 4).setValue(nowStr);
         } else {
-          settingsSheet.appendRow([k, val, '自訂設定', nowStr]);
+          settingsSheet.appendRow([k, val, '跨裝置同步設定', nowStr]);
+          keyRowMap[k] = settingsSheet.getLastRow();
         }
       });
 
-      // 同步模型設定至 Script Properties
       const props = PropertiesService.getScriptProperties();
-      if (params.settings.parseModel) {
-        props.setProperty('GEMINI_PARSE_MODEL', String(params.settings.parseModel));
+      if (normalizedSettings.parseModel) {
+        props.setProperty('GEMINI_PARSE_MODEL', String(normalizedSettings.parseModel));
       }
-      if (params.settings.diagnosisModel) {
-        props.setProperty('GEMINI_DIAGNOSIS_MODEL', String(params.settings.diagnosisModel));
+      if (normalizedSettings.diagnosisModel) {
+        props.setProperty('GEMINI_DIAGNOSIS_MODEL', String(normalizedSettings.diagnosisModel));
       }
     }
 
-    // 2. 批次覆寫更新 Budgets 分類與月度預算工作表
+    // 2. 批次更新 Budgets 分類與月度預算工作表（相容 budget 與 monthlyBudget 欄位）
     if (Array.isArray(params.budgets) && params.budgets.length > 0) {
       let budgetSheet = ss.getSheetByName(SHEET_BUDGETS);
       if (!budgetSheet) {
@@ -2154,29 +2563,30 @@ function saveCloudSettingsAndBudgets_(params) {
       }
       const rows = params.budgets
         .filter(b => b && String(b.category || '').trim())
-        .map(b => [
-          String(b.category).trim(),
-          Math.max(0, Number(b.budget || 0)),
-          String(b.ruleGroup || '必要支出 (Needs)'),
-          String(b.note || '')
-        ]);
+        .map(b => {
+          const amt = b.budget !== undefined ? Number(b.budget) : Number(b.monthlyBudget || 0);
+          return [
+            String(b.category).trim(),
+            Math.max(0, isNaN(amt) ? 0 : amt),
+            String(b.ruleGroup || '必要支出 (Needs)'),
+            String(b.note || '')
+          ];
+        });
       if (rows.length > 0) {
         budgetSheet.getRange(2, 1, rows.length, 4).setValues(rows);
       }
     }
 
-    // 3. 若使用者在網頁端有填入更新後端金鑰，直接寫入 Script Properties
-    if (params.secrets && typeof params.secrets === 'object') {
+    // 3. 更新後端金鑰 Script Properties（相容 secrets 與 scriptProperties）
+    const sec = Object.assign({}, params.secrets || {}, params.scriptProperties || {});
+    if (Object.keys(sec).length > 0) {
       const props = PropertiesService.getScriptProperties();
-      if (params.secrets.geminiApiKey && params.secrets.geminiApiKey.trim()) {
-        props.setProperty('GEMINI_API_KEY', params.secrets.geminiApiKey.trim());
-      }
-      if (params.secrets.lineToken && params.secrets.lineToken.trim()) {
-        props.setProperty('LINE_CHANNEL_ACCESS_TOKEN', params.secrets.lineToken.trim());
-      }
-      if (params.secrets.driveFolderId !== undefined && String(params.secrets.driveFolderId).trim()) {
-        props.setProperty('DRIVE_FOLDER_ID', String(params.secrets.driveFolderId).trim());
-      }
+      const gemKey = (sec.geminiApiKey || sec.GEMINI_API_KEY || '').trim();
+      const lineTok = (sec.lineToken || sec.LINE_CHANNEL_ACCESS_TOKEN || '').trim();
+      const drvId = (sec.driveFolderId || sec.DRIVE_FOLDER_ID || '').trim();
+      if (gemKey) props.setProperty('GEMINI_API_KEY', gemKey);
+      if (lineTok) props.setProperty('LINE_CHANNEL_ACCESS_TOKEN', lineTok);
+      if (drvId) props.setProperty('DRIVE_FOLDER_ID', drvId);
     }
 
     SpreadsheetApp.flush();
@@ -2184,7 +2594,7 @@ function saveCloudSettingsAndBudgets_(params) {
       ok: true,
       syncedAt: nowStr,
       cloudSettings: getCloudSettings_(),
-      message: '✅ 所有設定與分類預算已儲存至 Google Sheets，手機、平板、電腦與 LINE Bot 已全面同步！'
+      message: '✅ 設定已成功寫入 Google Sheets，所有裝置與 LINE 皆已同步！'
     };
   } finally {
     lock.releaseLock();
@@ -2235,7 +2645,7 @@ function getLatestAiReport_(yearMonth) {
 
   const data = sheet.getDataRange().getValues();
   for (let i = data.length - 1; i >= 1; i--) {
-    if (!yearMonth || String(data[i][2]) === String(yearMonth)) {
+    if (!yearMonth || yearMonth === 'ALL' || String(data[i][2]) === String(yearMonth)) {
       try {
         return JSON.parse(String(data[i][6]));
       } catch (e) {
@@ -2272,14 +2682,314 @@ function updateCategoryBudget_(category, newBudget) {
 
 /**
  * ============================================================================
- * 9. LINE Messaging API 卡片建構器 (Flex Message + Quick Reply)
+ * 10. LINE 極簡風互動小卡建構器 (Flex Messages + Quick Reply)
  * ============================================================================
+ */
+
+/**
+ * 當使用者點選圖文選單「✍️ 點選記帳」或「📸 收據記帳」後回傳的啟動卡片
+ */
+function buildAccountingStartedFlex_(inputMode) {
+  const isImage = inputMode === 'image';
+  const mobileUrl = getMobileDashboardUrl_();
+
+  return {
+    type: 'flex',
+    altText: isImage ? '📸 已開啟收據記帳模式，請傳送照片' : '✍️ 已開啟記帳模式，請輸入消費內容',
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#0f172a',
+        paddingAll: '14px',
+        contents: [
+          {
+            type: 'text',
+            text: isImage ? '📸 收據記帳模式已啟動' : '✍️ 文字記帳模式已啟動',
+            color: '#ffffff',
+            weight: 'bold',
+            size: 'sm'
+          }
+        ]
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '14px',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'text',
+            text: isImage
+              ? '請點選下方按鈕拍攝或選擇您的發票 / 收據照片上傳：'
+              : '請輸入這筆消費內容（支援單則多筆），例如：',
+            size: 'xs',
+            color: '#334155',
+            wrap: true
+          },
+          {
+            type: 'text',
+            text: isImage
+              ? '• 紙本發票、超商明細、餐廳收據或網購截圖'
+              : '• 午餐便當 120\n• 早餐45 拿鐵65 捷運30\n• 10/23 薪水入帳 55000',
+            size: 'xs',
+            color: '#64748b',
+            wrap: true
+          }
+        ]
+      },
+      footer: {
+        type: 'box',
+        layout: 'horizontal',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: {
+              type: 'postback',
+              label: '❌ 取消記帳',
+              data: 'action=cancel_accounting',
+              displayText: '取消記帳'
+            }
+          },
+          mobileUrl ? {
+            type: 'button',
+            style: 'link',
+            height: 'sm',
+            action: {
+              type: 'uri',
+              label: '📱 手機查帳',
+              uri: mobileUrl
+            }
+          } : { type: 'filler' }
+        ]
+      }
+    },
+    quickReply: {
+      items: [
+        {
+          type: 'action',
+          action: { type: 'camera', label: '📷 拍攝收據' }
+        },
+        {
+          type: 'action',
+          action: { type: 'cameraRoll', label: '🖼️ 相簿選圖' }
+        },
+        {
+          type: 'action',
+          action: {
+            type: 'postback',
+            label: '❌ 取消記帳',
+            data: 'action=cancel_accounting',
+            displayText: '取消記帳'
+          }
+        }
+      ]
+    }
+  };
+}
+
+/**
+ * 當使用者「未點選圖文選單」而直接傳送文字或圖片時的防誤觸提示卡
+ */
+function buildNotTriggeredPromptFlex_(draftType, previewText) {
+  const mobileUrl = getMobileDashboardUrl_();
+  const shortPreview = String(previewText || '').slice(0, 40);
+
+  const footerBtns = [
+    {
+      type: 'button',
+      style: 'primary',
+      color: '#0f172a',
+      height: 'sm',
+      action: {
+        type: 'postback',
+        label: '✅ 點選觸發此筆記帳',
+        data: 'action=trigger_pending_draft',
+        displayText: '✅ 確認觸發記帳'
+      }
+    },
+    {
+      type: 'box',
+      layout: 'horizontal',
+      spacing: 'sm',
+      contents: [
+        {
+          type: 'button',
+          style: 'secondary',
+          height: 'sm',
+          action: {
+            type: 'postback',
+            label: '忽略訊息',
+            data: 'action=cancel_accounting'
+          }
+        },
+        mobileUrl ? {
+          type: 'button',
+          style: 'secondary',
+          height: 'sm',
+          action: {
+            type: 'uri',
+            label: '📱 手機查帳',
+            uri: mobileUrl
+          }
+        } : { type: 'filler' }
+      ]
+    }
+  ];
+
+  return {
+    type: 'flex',
+    altText: '⏸️ 尚未觸發記帳：請點選確認按鈕或圖文選單開始記帳',
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#334155',
+        paddingAll: '14px',
+        contents: [
+          {
+            type: 'text',
+            text: '⏸️ 直接傳送不會自動記帳',
+            color: '#ffffff',
+            weight: 'bold',
+            size: 'sm'
+          }
+        ]
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '14px',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'text',
+            text: `收到內容：「${shortPreview}」`,
+            size: 'xs',
+            weight: 'bold',
+            color: '#0f172a',
+            wrap: true
+          },
+          {
+            type: 'text',
+            text: '為避免日常對話誤觸，請先點選下方圖文選單【✍️ 點選記帳】，或直接點選下方按鈕將此筆內容入帳：',
+            size: 'xs',
+            color: '#64748b',
+            wrap: true
+          }
+        ]
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: footerBtns
+      }
+    }
+  };
+}
+
+/**
+ * 雙重確認模式下的「AI 解析預覽確認卡」
+ */
+function buildPreviewConfirmFlex_(items, assistantNote) {
+  const totalAmount = items.reduce((acc, t) => acc + (Number(t.amount) || 0), 0);
+  const rows = items.slice(0, 6).map(t => ({
+    type: 'box',
+    layout: 'horizontal',
+    margin: 'xs',
+    contents: [
+      {
+        type: 'text',
+        text: `${t.category} › ${t.subcategory || '一般'}｜${t.item}`,
+        size: 'xs',
+        color: '#334155',
+        flex: 4,
+        wrap: true
+      },
+      {
+        type: 'text',
+        text: `$${Number(t.amount || 0).toLocaleString()}`,
+        size: 'xs',
+        weight: 'bold',
+        color: '#0f172a',
+        align: 'end',
+        flex: 2
+      }
+    ]
+  }));
+
+  return {
+    type: 'flex',
+    altText: `📋 記帳預覽：共 ${items.length} 筆 ($${totalAmount.toLocaleString()})，請點選確認入帳`,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#0f172a',
+        paddingAll: '14px',
+        contents: [
+          { type: 'text', text: '📋 AI 記帳預覽（請點選確認入帳）', color: '#94a3b8', size: 'xs' },
+          { type: 'text', text: `NT$ ${totalAmount.toLocaleString()}`, color: '#ffffff', weight: 'bold', size: 'xl', margin: 'xs' }
+        ]
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '14px',
+        contents: rows
+      },
+      footer: {
+        type: 'box',
+        layout: 'horizontal',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: {
+              type: 'postback',
+              label: '取消',
+              data: 'action=cancel_accounting'
+            }
+          },
+          {
+            type: 'button',
+            style: 'primary',
+            color: '#10b981',
+            height: 'sm',
+            action: {
+              type: 'postback',
+              label: '✅ 確認入帳',
+              data: 'action=confirm_preview_save',
+              displayText: '✅ 確認寫入帳本'
+            }
+          }
+        ]
+      }
+    }
+  };
+}
+
+/**
+ * 記帳完成回傳的極簡確認小卡（內建「📱 手機版檢視帳務」、「➕ 再記一筆」、「↩️ 撤銷此筆」）
  */
 function buildReceiptConfirmFlex_(savedBatch, assistantNote) {
   const txs = savedBatch.transactions;
-  const totalAmount = txs.reduce((acc, t) => acc + (t.type === '收入' ? t.amount : t.amount), 0);
+  const totalAmount = txs.reduce((acc, t) => acc + t.amount, 0);
   const isIncome = txs.every(t => t.type === '收入');
-  const headerColor = isIncome ? '#059669' : '#2563eb';
+  const headerColor = isIncome ? '#059669' : '#0f172a';
+  const mobileUrl = getMobileDashboardUrl_();
 
   const itemRows = txs.slice(0, 8).map(t => ({
     type: 'box',
@@ -2288,8 +2998,8 @@ function buildReceiptConfirmFlex_(savedBatch, assistantNote) {
     contents: [
       {
         type: 'text',
-        text: `[${t.category}] ${t.item}`,
-        size: 'sm',
+        text: `${t.category}${t.subcategory ? ' › ' + t.subcategory : ''}｜${t.item}`,
+        size: 'xs',
         color: '#334155',
         flex: 4,
         wrap: true
@@ -2297,7 +3007,7 @@ function buildReceiptConfirmFlex_(savedBatch, assistantNote) {
       {
         type: 'text',
         text: `${t.type === '收入' ? '+' : ''}$${t.amount.toLocaleString()}`,
-        size: 'sm',
+        size: 'xs',
         color: t.type === '收入' ? '#059669' : '#0f172a',
         weight: 'bold',
         align: 'end',
@@ -2306,55 +3016,64 @@ function buildReceiptConfirmFlex_(savedBatch, assistantNote) {
     ]
   }));
 
-  if (txs.length > 8) {
-    itemRows.push({
-      type: 'text',
-      text: `...及其他 ${txs.length - 8} 筆項目`,
-      size: 'xs',
-      color: '#64748b',
-      margin: 'sm'
-    });
-  }
-
   const firstTx = txs[0];
-  const footerButtons = [
-    {
-      type: 'button',
-      style: 'secondary',
-      height: 'sm',
-      action: {
-        type: 'postback',
-        label: '🗑️ 撤銷此筆記帳',
-        data: `action=delete_batch&batchId=${savedBatch.batchId}`,
-        displayText: '撤銷此筆記帳'
-      }
-    }
-  ];
+  const footerButtons = [];
 
-  if (savedBatch.imageUrl) {
-    footerButtons.unshift({
+  if (mobileUrl) {
+    footerButtons.push({
       type: 'button',
-      style: 'link',
+      style: 'primary',
+      color: '#0f172a',
       height: 'sm',
       action: {
         type: 'uri',
-        label: '🖼️ 查看雲端收據原圖',
-        uri: savedBatch.imageUrl
+        label: '📱 手機版檢視帳務 (網頁)',
+        uri: mobileUrl
       }
     });
   }
+
+  footerButtons.push({
+    type: 'box',
+    layout: 'horizontal',
+    spacing: 'sm',
+    contents: [
+      {
+        type: 'button',
+        style: 'secondary',
+        height: 'sm',
+        action: {
+          type: 'postback',
+          label: '➕ 再記一筆',
+          data: 'action=start_accounting&mode=text',
+          displayText: '✍️ 點選開始記帳'
+        }
+      },
+      {
+        type: 'button',
+        style: 'secondary',
+        height: 'sm',
+        action: {
+          type: 'postback',
+          label: '↩️ 撤銷此筆',
+          data: `action=delete_batch&batchId=${savedBatch.batchId}`,
+          displayText: '↩️ 撤銷此筆記帳'
+        }
+      }
+    ]
+  });
 
   return {
     type: 'flex',
     altText: `✅ 已記帳 ${txs.length} 筆，共 $${totalAmount.toLocaleString()}`,
     contents: {
       type: 'bubble',
-      size: 'mega',
+      size: 'kilo',
       header: {
         type: 'box',
         layout: 'vertical',
         backgroundColor: headerColor,
-        paddingAll: '16px',
+        paddingAll: '14px',
         contents: [
           {
             type: 'box',
@@ -2362,20 +3081,20 @@ function buildReceiptConfirmFlex_(savedBatch, assistantNote) {
             contents: [
               {
                 type: 'text',
-                text: isIncome ? '💰 收入入帳成功' : '✅ AI 記帳完成',
+                text: isIncome ? '💰 收入已入帳' : '✅ 已寫入 Google Sheet',
                 color: '#ffffff',
                 weight: 'bold',
-                size: 'md',
+                size: 'xs',
                 flex: 3
               },
               {
                 type: 'text',
-                text: `${txs.length} 筆明細`,
-                color: '#e2e8f0',
-                size: 'xs',
+                text: `${firstTx.date} · ${firstTx.paymentMethod}`,
+                color: '#cbd5e1',
+                size: 'xxs',
                 align: 'end',
                 gravity: 'center',
-                flex: 1
+                flex: 3
               }
             ]
           },
@@ -2384,67 +3103,16 @@ function buildReceiptConfirmFlex_(savedBatch, assistantNote) {
             text: `NT$ ${totalAmount.toLocaleString()}`,
             color: '#ffffff',
             weight: 'bold',
-            size: 'xxl',
-            margin: 'md'
+            size: 'xl',
+            margin: 'sm'
           }
         ]
       },
       body: {
         type: 'box',
         layout: 'vertical',
-        paddingAll: '16px',
-        contents: [
-          {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              {
-                type: 'text',
-                text: `📅 ${firstTx.date} ${firstTx.time}`,
-                size: 'xs',
-                color: '#64748b',
-                flex: 3
-              },
-              {
-                type: 'text',
-                text: `💳 ${firstTx.paymentMethod}`,
-                size: 'xs',
-                color: '#64748b',
-                align: 'end',
-                flex: 2
-              }
-            ]
-          },
-          firstTx.merchant ? {
-            type: 'text',
-            text: `🏪 店家：${firstTx.merchant}${firstTx.invoiceNo ? ' (' + firstTx.invoiceNo + ')' : ''}`,
-            size: 'xs',
-            color: '#64748b',
-            margin: 'xs'
-          } : { type: 'filler' },
-          {
-            type: 'separator',
-            margin: 'md'
-          },
-          {
-            type: 'box',
-            layout: 'vertical',
-            margin: 'md',
-            contents: itemRows
-          },
-          {
-            type: 'separator',
-            margin: 'md'
-          },
-          {
-            type: 'text',
-            text: assistantNote ? `💡 ${assistantNote}` : `🔒 已同步備份至 Google Sheets (${firstTx.rawLogId})`,
-            size: 'xs',
-            color: '#475569',
-            margin: 'md',
-            wrap: true
-          }
-        ]
+        paddingAll: '14px',
+        contents: itemRows
       },
       footer: {
         type: 'box',
@@ -2464,107 +3132,95 @@ function buildMonthlySummaryFlex_(summary) {
     return {
       type: 'box',
       layout: 'horizontal',
-      margin: 'sm',
+      margin: 'xs',
       contents: [
-        { type: 'text', text: `${c.category} (${pct}%)`, size: 'sm', color: '#334155', flex: 3 },
-        { type: 'text', text: `$${c.amount.toLocaleString()}`, size: 'sm', weight: 'bold', align: 'end', flex: 2 }
+        { type: 'text', text: `${c.category} (${pct}%)`, size: 'xs', color: '#334155', flex: 3 },
+        { type: 'text', text: `$${c.amount.toLocaleString()}`, size: 'xs', weight: 'bold', align: 'end', flex: 2 }
       ]
     };
-  }) : [{ type: 'text', text: '本月尚無支出紀錄', size: 'sm', color: '#94a3b8' }];
+  }) : [{ type: 'text', text: '本月尚無支出紀錄', size: 'xs', color: '#94a3b8' }];
 
-  const config = getConfig();
-  const footerBtns = [
-    {
-      type: 'button',
-      style: 'primary',
-      color: '#4f46e5',
-      height: 'sm',
-      action: {
-        type: 'postback',
-        label: '🩺 執行 Gemini 財務診斷',
-        data: 'action=ai_diagnosis',
-        displayText: '執行本月財務診斷'
-      }
-    }
-  ];
+  const mobileUrl = getMobileDashboardUrl_();
+  const footerBtns = [];
 
-  if (config.webAppUrl) {
+  if (mobileUrl) {
     footerBtns.push({
       type: 'button',
-      style: 'secondary',
+      style: 'primary',
+      color: '#0f172a',
       height: 'sm',
       action: {
         type: 'uri',
-        label: '🌐 開啟視覺化網頁儀表板',
-        uri: config.webAppUrl
+        label: '📱 開啟手機版網頁檢視帳務',
+        uri: mobileUrl
       }
     });
   }
 
   return {
     type: 'flex',
-    altText: `📊 ${summary.yearMonth} 帳務統計摘要`,
+    altText: `📊 ${summary.yearMonth} 帳務摘要`,
     contents: {
       type: 'bubble',
-      size: 'mega',
+      size: 'kilo',
       header: {
         type: 'box',
         layout: 'vertical',
         backgroundColor: '#0f172a',
-        paddingAll: '16px',
+        paddingAll: '14px',
         contents: [
-          { type: 'text', text: `📊 ${summary.yearMonth} 收支快篩報表`, color: '#38bdf8', weight: 'bold', size: 'sm' },
-          { type: 'text', text: `總支出 NT$ ${summary.totalExpense.toLocaleString()}`, color: '#ffffff', weight: 'bold', size: 'xl', margin: 'sm' },
-          { type: 'text', text: `總收入 $${summary.totalIncome.toLocaleString()} ｜ 結餘 $${summary.netSavings.toLocaleString()}`, color: '#94a3b8', size: 'xs', margin: 'xs' }
+          { type: 'text', text: `📊 ${summary.yearMonth} 帳務摘要`, color: '#94a3b8', weight: 'bold', size: 'xs' },
+          { type: 'text', text: `支出 NT$ ${summary.totalExpense.toLocaleString()}`, color: '#ffffff', weight: 'bold', size: 'xl', margin: 'xs' },
+          { type: 'text', text: `收入 $${summary.totalIncome.toLocaleString()} ｜ 結餘 $${summary.netSavings.toLocaleString()}`, color: '#cbd5e1', size: 'xxs', margin: 'xs' }
         ]
       },
       body: {
         type: 'box',
         layout: 'vertical',
-        paddingAll: '16px',
+        paddingAll: '14px',
         contents: [
           {
             type: 'text',
-            text: `預算使用率：${summary.budgetUsageRate}% （月預算 $${summary.totalMonthlyBudget.toLocaleString()}）`,
+            text: `預算使用率：${summary.budgetUsageRate}% （上限 $${summary.totalMonthlyBudget.toLocaleString()}）`,
             size: 'xs',
             weight: 'bold',
-            color: summary.budgetUsageRate > 90 ? '#dc2626' : '#059669'
+            color: summary.budgetUsageRate > 90 ? '#e11d48' : '#059669'
           },
-          { type: 'separator', margin: 'md' },
-          { type: 'text', text: '前五大支出分類：', size: 'xs', color: '#64748b', margin: 'md' },
+          { type: 'separator', margin: 'sm' },
           { type: 'box', layout: 'vertical', margin: 'sm', contents: catRows }
         ]
       },
-      footer: {
+      footer: footerBtns.length > 0 ? {
         type: 'box',
         layout: 'vertical',
         spacing: 'sm',
         contents: footerBtns
-      }
+      } : undefined
     },
     quickReply: buildStandardQuickReply_()
   };
 }
 
 function buildDiagnosisFlexMessage_(report) {
+  const mobileUrl = getMobileDashboardUrl_();
   const tipsRows = (report.actionableTips || []).slice(0, 3).map((tip, idx) => ({
     type: 'box',
     layout: 'vertical',
-    margin: 'md',
+    margin: 'sm',
     contents: [
       {
         type: 'text',
         text: `${idx + 1}. ${tip.action}（${tip.expectedImpact}）`,
-        size: 'sm',
+        size: 'xs',
         weight: 'bold',
-        color: '#1e293b',
+        color: '#0f172a',
         wrap: true
       },
       {
         type: 'text',
         text: tip.description,
-        size: 'xs',
-        color: '#475569',
+        size: 'xxs',
+        color: '#64748b',
         wrap: true,
         margin: 'xs'
       }
@@ -2573,24 +3229,24 @@ function buildDiagnosisFlexMessage_(report) {
 
   return {
     type: 'flex',
-    altText: `🩺 AI 財務診斷報告：健康評分 ${report.healthScore} 分`,
+    altText: `✨ AI 財務診斷：${report.healthScore} 分`,
     contents: {
       type: 'bubble',
-      size: 'mega',
+      size: 'kilo',
       header: {
         type: 'box',
         layout: 'vertical',
-        backgroundColor: '#4f46e5',
-        paddingAll: '16px',
+        backgroundColor: '#0f172a',
+        paddingAll: '14px',
         contents: [
-          { type: 'text', text: `🩺 ${report.period} Gemini 財務診斷報告`, color: '#e0e7ff', size: 'xs', weight: 'bold' },
+          { type: 'text', text: `✨ ${report.period} AI 財務診斷`, color: '#94a3b8', size: 'xs', weight: 'bold' },
           {
             type: 'box',
             layout: 'baseline',
-            margin: 'sm',
+            margin: 'xs',
             contents: [
-              { type: 'text', text: `${report.healthScore}`, color: '#ffffff', size: '3xl', weight: 'bold', flex: 0 },
-              { type: 'text', text: ` / 100 分 (${report.healthGrade})`, color: '#c7d2fe', size: 'sm', margin: 'sm' }
+              { type: 'text', text: `${report.healthScore}`, color: '#ffffff', size: 'xxl', weight: 'bold', flex: 0 },
+              { type: 'text', text: ` / 100 (${report.healthGrade})`, color: '#cbd5e1', size: 'xs', margin: 'sm' }
             ]
           }
         ]
@@ -2598,57 +3254,89 @@ function buildDiagnosisFlexMessage_(report) {
       body: {
         type: 'box',
         layout: 'vertical',
-        paddingAll: '16px',
+        paddingAll: '14px',
         contents: [
           {
             type: 'text',
             text: report.executiveSummary || '',
-            size: 'sm',
+            size: 'xs',
             color: '#334155',
             wrap: true
           },
-          { type: 'separator', margin: 'md' },
-          {
-            type: 'text',
-            text: '💡 具體優化行動建議：',
-            size: 'xs',
-            weight: 'bold',
-            color: '#4f46e5',
-            margin: 'md'
-          },
+          { type: 'separator', margin: 'sm' },
           {
             type: 'box',
             layout: 'vertical',
             contents: tipsRows
           }
         ]
-      }
+      },
+      footer: mobileUrl ? {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: {
+              type: 'uri',
+              label: '📱 手機版查看完整報表',
+              uri: mobileUrl
+            }
+          }
+        ]
+      } : undefined
     },
     quickReply: buildStandardQuickReply_()
   };
 }
 
 function buildStandardQuickReply_() {
-  return {
-    items: [
-      {
-        type: 'action',
-        action: { type: 'message', label: '📊 本月報表', text: '本月報表' }
-      },
-      {
-        type: 'action',
-        action: { type: 'message', label: '🩺 財務診斷', text: '財務診斷' }
-      },
-      {
-        type: 'action',
-        action: { type: 'message', label: '🗑️ 撤銷上一筆', text: '撤銷上一筆' }
-      },
-      {
-        type: 'action',
-        action: { type: 'message', label: '📖 指令說明', text: '說明' }
+  const mobileUrl = getMobileDashboardUrl_();
+  const items = [
+    {
+      type: 'action',
+      action: {
+        type: 'postback',
+        label: '✍️ 點選記帳',
+        data: 'action=start_accounting&mode=text',
+        displayText: '✍️ 點選開始記帳'
       }
-    ]
-  };
+    },
+    {
+      type: 'action',
+      action: {
+        type: 'postback',
+        label: '📸 收據記帳',
+        data: 'action=start_accounting&mode=image',
+        displayText: '📸 拍收據記帳'
+      }
+    }
+  ];
+
+  if (mobileUrl) {
+    items.push({
+      type: 'action',
+      action: {
+        type: 'uri',
+        label: '📱 手機檢視帳務',
+        uri: mobileUrl
+      }
+    });
+  }
+
+  items.push({
+    type: 'action',
+    action: {
+      type: 'postback',
+      label: '📊 本月摘要',
+      data: 'action=monthly_summary',
+      displayText: '📊 查看本月帳務摘要'
+    }
+  });
+
+  return { items: items };
 }
 
 function replyLineText_(replyToken, text) {
@@ -2668,9 +3356,7 @@ function replyLineMessages_(replyToken, messages) {
   UrlFetchApp.fetch('https://api.line.me/v2/bot/message/reply', {
     method: 'post',
     contentType: 'application/json',
-    headers: {
-      Authorization: 'Bearer ' + config.lineToken
-    },
+    headers: { Authorization: 'Bearer ' + config.lineToken },
     payload: JSON.stringify({
       replyToken: replyToken,
       messages: messages
@@ -2681,7 +3367,7 @@ function replyLineMessages_(replyToken, messages) {
 
 /**
  * ============================================================================
- * 10. 輔助工具函式
+ * 11. 輔助工具函式
  * ============================================================================
  */
 function formatDateCell_(val) {
