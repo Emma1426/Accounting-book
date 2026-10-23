@@ -624,8 +624,8 @@
 
             <div class="space-y-2.5 text-xs">
               <div>
-                <label class="block font-mono-num text-[11px] font-semibold text-[#141413] mb-1">GAS Web App URL (<code class="text-[#6E6D68]">/exec</code>)</label>
-                <input id="tabCfgGasUrl" oninput="updateQrPreview()" type="url" placeholder="https://script.google.com/macros/s/XXXX/exec" class="w-full px-3 py-2 sharp-input font-mono-num text-xs" />
+                <label class="block font-mono-num text-[11px] font-semibold text-[#141413] mb-1">雲端 API 網址 (Vercel <code class="text-[#6E6D68]">/api/index</code> 或 GAS <code class="text-[#6E6D68]">/exec</code>)</label>
+                <input id="tabCfgGasUrl" oninput="updateQrPreview()" type="url" placeholder="https://your-project.vercel.app/api/index" class="w-full px-3 py-2 sharp-input font-mono-num text-xs" />
               </div>
               <div>
                 <label class="block font-mono-num text-[11px] font-semibold text-[#141413] mb-1">安全通行碼 DASHBOARD_ACCESS_TOKEN (選填)</label>
@@ -923,7 +923,7 @@
 
     function getDefaultGithubPagesUrl() {
       const cfg = window.ACCOUNTING_CLOUD_CONFIG || {};
-      if (window.location.hostname.includes('github.io')) {
+      if (window.location.hostname.includes('github.io') || window.location.hostname.includes('vercel.app')) {
         return window.location.origin + window.location.pathname;
       }
       return cfg.DEFAULT_GITHUB_PAGES_URL || 'https://emma1426.github.io/Accounting-book/';
@@ -932,6 +932,11 @@
     function getEffectiveGasUrl() {
       const stored = (localStorage.getItem('cfg_gas_url') || '').trim();
       if (stored) return stored;
+      if (window.location.hostname.includes('vercel.app') || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        const autoUrl = window.location.origin + '/api/index';
+        localStorage.setItem('cfg_gas_url', autoUrl);
+        return autoUrl;
+      }
       const cfg = window.ACCOUNTING_CLOUD_CONFIG || {};
       const fromConfig = (cfg.DEFAULT_GAS_WEB_APP_URL || cfg.GAS_WEB_APP_URL || '').trim();
       if (fromConfig) {
@@ -1057,7 +1062,7 @@
           });
         } else if (gasUrl) {
           try {
-            const url = new URL(gasUrl);
+            const url = new URL(gasUrl, window.location.origin);
             url.searchParams.set('action', 'bootstrap');
             url.searchParams.set('yearMonth', selectedPeriod);
             url.searchParams.set('_t', Date.now());
