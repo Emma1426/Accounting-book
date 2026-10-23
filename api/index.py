@@ -1,59 +1,145 @@
 import os
+import sys
 import re
 import json
 import time
 import base64
 import random
+import urllib.request
+import urllib.error
 from urllib.parse import urlparse, parse_qs, urlencode
 from http.server import BaseHTTPRequestHandler
-from api.sheets_service import (
-    SHEET_TRANSACTIONS,
-    SHEET_RAW_LOGS,
-    SHEET_BUDGETS,
-    SHEET_AI_REPORTS,
-    SHEET_SETTINGS,
-    DEFAULT_PARSE_MODEL,
-    DEFAULT_DIAGNOSIS_MODEL,
-    DEFAULT_GITHUB_PAGES_URL,
-    EXPENSE_CATEGORIES,
-    INCOME_CATEGORIES,
-    DEFAULT_SUBCATEGORY_TAXONOMY,
-    DEFAULT_BUDGETS_ROWS,
-    now_taipei,
-    now_str,
-    get_spreadsheet_id,
-    get_sheet_values,
-    batch_get_all_sheets,
-    append_sheet_values,
-    update_sheet_values,
-    clear_sheet_range,
-    upload_image_to_drive
-)
-from api.line_service import (
-    get_line_token,
-    reply_line_messages,
-    reply_line_text,
-    get_line_message_content,
-    setup_rich_menu_flow,
-    build_accounting_started_flex,
-    build_not_triggered_prompt_flex,
-    build_preview_confirm_flex,
-    build_receipt_confirm_flex,
-    build_monthly_summary_flex,
-    build_diagnosis_flex_message
-)
-from api.gemini_service import (
-    get_gemini_api_key,
-    call_gemini_interactions_api,
-    parse_accounting_input_with_gemini,
-    get_diagnosis_and_audit_schema
-)
+
+_CUR_DIR = os.path.dirname(os.path.abspath(__file__))
+_ROOT_DIR = os.path.dirname(_CUR_DIR)
+for _p in (_CUR_DIR, _ROOT_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+try:
+    from _sheets_service import (
+        SHEET_TRANSACTIONS,
+        SHEET_RAW_LOGS,
+        SHEET_BUDGETS,
+        SHEET_AI_REPORTS,
+        SHEET_SETTINGS,
+        DEFAULT_PARSE_MODEL,
+        DEFAULT_DIAGNOSIS_MODEL,
+        DEFAULT_GITHUB_PAGES_URL,
+        DEFAULT_FALLBACK_GAS_URL,
+        EXPENSE_CATEGORIES,
+        INCOME_CATEGORIES,
+        DEFAULT_SUBCATEGORY_TAXONOMY,
+        DEFAULT_BUDGETS_ROWS,
+        now_taipei,
+        now_str,
+        get_spreadsheet_id,
+        is_direct_sheets_configured,
+        get_sheet_values,
+        batch_get_all_sheets,
+        append_sheet_values,
+        update_sheet_values,
+        clear_sheet_range,
+        upload_image_to_drive
+    )
+    from _line_service import (
+        get_line_token,
+        reply_line_messages,
+        reply_line_text,
+        get_line_message_content,
+        setup_rich_menu_flow,
+        build_accounting_started_flex,
+        build_not_triggered_prompt_flex,
+        build_preview_confirm_flex,
+        build_receipt_confirm_flex,
+        build_monthly_summary_flex,
+        build_diagnosis_flex_message
+    )
+    from _gemini_service import (
+        get_gemini_api_key,
+        call_gemini_interactions_api,
+        parse_accounting_input_with_gemini,
+        get_diagnosis_and_audit_schema
+    )
+except ImportError:
+    from api._sheets_service import (
+        SHEET_TRANSACTIONS,
+        SHEET_RAW_LOGS,
+        SHEET_BUDGETS,
+        SHEET_AI_REPORTS,
+        SHEET_SETTINGS,
+        DEFAULT_PARSE_MODEL,
+        DEFAULT_DIAGNOSIS_MODEL,
+        DEFAULT_GITHUB_PAGES_URL,
+        DEFAULT_FALLBACK_GAS_URL,
+        EXPENSE_CATEGORIES,
+        INCOME_CATEGORIES,
+        DEFAULT_SUBCATEGORY_TAXONOMY,
+        DEFAULT_BUDGETS_ROWS,
+        now_taipei,
+        now_str,
+        get_spreadsheet_id,
+        is_direct_sheets_configured,
+        get_sheet_values,
+        batch_get_all_sheets,
+        append_sheet_values,
+        update_sheet_values,
+        clear_sheet_range,
+        upload_image_to_drive
+    )
+    from api._line_service import (
+        get_line_token,
+        reply_line_messages,
+        reply_line_text,
+        get_line_message_content,
+        setup_rich_menu_flow,
+        build_accounting_started_flex,
+        build_not_triggered_prompt_flex,
+        build_preview_confirm_flex,
+        build_receipt_confirm_flex,
+        build_monthly_summary_flex,
+        build_diagnosis_flex_message
+    )
+    from api._gemini_service import (
+        get_gemini_api_key,
+        call_gemini_interactions_api,
+        parse_accounting_input_with_gemini,
+        get_diagnosis_and_audit_schema
+    )
 
 # 記憶體快取（搭配 Google Sheet Settings 持久化，確保 Serverless 跨實例也能保留狀態）
 _MEMORY_SESSIONS = {}
 
 def get_dashboard_token():
     return os.environ.get('DASHBOARD_ACCESS_TOKEN', '').strip()
+
+def get_fallback_gas_url():
+    return os.environ.get('GAS_WEB_APP_URL', DEFAULT_FALLBACK_GAS_URL).strip()
+
+def proxy_to_gas_fallback(method='GET', query_params=None, json_body=None):
+    """當 Vercel 尚未設定 GOOGLE_SERVICE_ACCOUNT_JSON 或 SPREADSHEET_ID 時，無縫代理轉發至雲端 GAS Web App"""
+    gas_url = get_fallback_gas_url()
+    if not gas_url:
+        return None
+    try:
+        if method == 'GET':
+            q = urlencode(query_params or {})
+            target = f"{gas_url}{'&' if '?' in gas_url else '?'}{q}" if q else gas_url
+            req = urllib.request.Request(target, method='GET')
+        else:
+            body_bytes = json.dumps(json_body or {}, ensure_ascii=False).encode('utf-8')
+            req = urllib.request.Request(
+                gas_url,
+                data=body_bytes,
+                headers={'Content-Type': 'text/plain;charset=utf-8'},
+                method='POST'
+            )
+        with urllib.request.urlopen(req, timeout=55) as resp:
+            raw = resp.read().decode('utf-8', errors='replace')
+            return json.loads(raw)
+    except Exception as e:
+        print(f"GAS fallback proxy error: {e}")
+        return None
 
 def format_date_cell(val):
     if not val:
@@ -1561,11 +1647,24 @@ def process_line_event(event, request_host=''):
 # Dashboard API 統一路由
 # ============================================================================
 
-def handle_dashboard_action(action, params, request_host=''):
+def handle_dashboard_action(action, params, request_host='', is_get=False):
     try:
         dash_token = get_dashboard_token()
         if dash_token and str(params.get('token') or '') != dash_token:
             return {"ok": False, "error": "安全通行碼 (DASHBOARD_ACCESS_TOKEN) 驗證失敗"}
+
+        # 若尚未在 Vercel 環境變數設定直連 Google Sheets 憑證，自動無縫轉發至既有雲端 GAS 後端
+        if not is_direct_sheets_configured():
+            if is_get and action == 'bootstrap':
+                proxied = proxy_to_gas_fallback('GET', query_params=params)
+                if proxied is not None:
+                    return proxied
+            else:
+                body_payload = dict(params or {})
+                body_payload['dashboardAction'] = action
+                proxied = proxy_to_gas_fallback('POST', json_body=body_payload)
+                if proxied is not None:
+                    return proxied
 
         if action == 'bootstrap':
             return get_dashboard_bootstrap_data(params.get('yearMonth'), request_host=request_host)
@@ -1684,62 +1783,85 @@ def handle_dashboard_action(action, params, request_host=''):
 # ============================================================================
 
 class handler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        # 避免預設 stderr log 在部分環境引發 IO 例外
+        return
+
     def _send_json(self, data, status=200):
-        self.send_response(status)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        self.end_headers()
-        self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
+        try:
+            body = json.dumps(data, ensure_ascii=False).encode('utf-8')
+            self.send_response(status)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+            self.end_headers()
+            self.wfile.write(body)
+        except BaseException as e:
+            print(f"Response write warning: {e}")
 
     def do_OPTIONS(self):
-        self._send_json({"ok": True})
+        try:
+            self._send_json({"ok": True})
+        except BaseException as e:
+            print(f"OPTIONS error: {e}")
 
     def do_GET(self):
-        parsed_url = urlparse(self.path)
-        qs = parse_qs(parsed_url.query)
-        params = {k: v[0] for k, v in qs.items()}
-        action = params.get('action') or params.get('dashboardAction') or ''
-        host = self.headers.get('Host', '')
+        try:
+            parsed_url = urlparse(self.path)
+            qs = parse_qs(parsed_url.query)
+            params = {k: v[0] for k, v in qs.items()}
+            action = params.get('action') or params.get('dashboardAction') or ''
+            host = self.headers.get('Host', '')
 
-        if action:
-            res = handle_dashboard_action(action, params, request_host=host)
-            self._send_json(res)
-            return
+            if action:
+                res = handle_dashboard_action(action, params, request_host=host, is_get=True)
+                self._send_json(res)
+                return
 
-        self._send_json({
-            "ok": True,
-            "status": "online",
-            "message": "AI Accounting Serverless Backend (Direct Google Sheets API)"
-        })
+            self._send_json({
+                "ok": True,
+                "status": "online",
+                "mode": "direct_sheets" if is_direct_sheets_configured() else "gas_cloud_proxy",
+                "message": "AI Accounting Serverless Backend is active"
+            })
+        except BaseException as e:
+            self._send_json({"ok": False, "error": f"GET 處理異常: {e}"}, status=200)
 
     def do_POST(self):
-        host = self.headers.get('Host', '')
         try:
-            content_length = int(self.headers.get('Content-Length', 0))
-            body_bytes = self.rfile.read(content_length)
-            body_str = body_bytes.decode('utf-8')
-            params = json.loads(body_str) if body_str else {}
-        except Exception as e:
-            self._send_json({"ok": False, "error": f"JSON 解析失敗: {e}"}, status=400)
-            return
+            host = self.headers.get('Host', '')
+            try:
+                content_length = int(self.headers.get('Content-Length') or 0)
+                body_bytes = self.rfile.read(content_length) if content_length > 0 else b''
+                body_str = body_bytes.decode('utf-8', errors='replace')
+                params = json.loads(body_str) if body_str else {}
+            except Exception as e:
+                self._send_json({"ok": False, "error": f"JSON 解析失敗: {e}"}, status=400)
+                return
 
-        # 1. 判斷是否為網頁儀表板的 API POST 請求
-        action = params.get('dashboardAction') or params.get('action')
-        if action:
-            res = handle_dashboard_action(action, params, request_host=host)
-            self._send_json(res)
-            return
+            # 1. 判斷是否為網頁儀表板的 API POST 請求
+            action = params.get('dashboardAction') or params.get('action')
+            if action:
+                res = handle_dashboard_action(action, params, request_host=host, is_get=False)
+                self._send_json(res)
+                return
 
-        # 2. 處理 LINE Webhook Events
-        if 'events' in params:
-            for ev in params.get('events', []):
-                try:
-                    process_line_event(ev, request_host=host)
-                except Exception as err:
-                    print(f"LINE event error: {err}")
-            self._send_json({"status": "ok"})
-            return
+            # 2. 處理 LINE Webhook Events
+            if 'events' in params:
+                if not is_direct_sheets_configured():
+                    proxy_to_gas_fallback('POST', json_body=params)
+                    self._send_json({"status": "ok", "mode": "gas_cloud_proxy"})
+                    return
+                for ev in params.get('events', []):
+                    try:
+                        process_line_event(ev, request_host=host)
+                    except Exception as err:
+                        print(f"LINE event error: {err}")
+                self._send_json({"status": "ok"})
+                return
 
-        self._send_json({"ok": False, "error": "無法辨識的請求格式"}, status=400)
+            self._send_json({"ok": False, "error": "無法辨識的請求格式"}, status=400)
+        except BaseException as e:
+            self._send_json({"ok": False, "error": f"POST 處理異常: {e}"}, status=200)

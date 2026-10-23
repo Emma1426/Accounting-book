@@ -1,11 +1,44 @@
 import os
 import json
-import requests
-from io import BytesIO
-from PIL import Image, ImageDraw
+import zlib
+import struct
+import urllib.request
+import urllib.error
+
+try:
+    import requests
+except ImportError:
+    requests = None
 
 LINE_API_BASE = "https://api.line.me/v2/bot"
 LINE_DATA_BASE = "https://api-data.line.me/v2/bot"
+
+def _http_request(method, url, headers=None, json_body=None, raw_data=None, timeout=20):
+    """具備 requests 與標準庫 urllib 雙重支援的 HTTP 呼叫工具"""
+    hdrs = dict(headers or {})
+    if requests is not None:
+        resp = requests.request(
+            method=method,
+            url=url,
+            headers=hdrs,
+            json=json_body,
+            data=raw_data,
+            timeout=timeout
+        )
+        return resp.status_code, resp.content, resp.headers
+
+    data_bytes = raw_data
+    if json_body is not None:
+        data_bytes = json.dumps(json_body, ensure_ascii=False).encode('utf-8')
+        if 'Content-Type' not in hdrs:
+            hdrs['Content-Type'] = 'application/json'
+
+    req = urllib.request.Request(url, data=data_bytes, headers=hdrs, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read(), dict(r.info())
+    except urllib.error.HTTPError as e:
+        return e.code, e.read(), dict(e.headers or {})
 
 def get_line_token(override_token=None):
     if override_token and str(override_token).strip():
@@ -28,8 +61,8 @@ def reply_line_messages(reply_token, messages, override_token=None):
         "replyToken": reply_token,
         "messages": messages
     }
-    resp = requests.post(url, json=payload, headers=line_headers(override_token=token), timeout=15)
-    return resp.status_code == 200
+    status, _, _ = _http_request("POST", url, headers=line_headers(override_token=token), json_body=payload, timeout=15)
+    return status == 200
 
 def reply_line_text(reply_token, text, mobile_url='', override_token=None):
     return reply_line_messages(
@@ -45,31 +78,59 @@ def reply_line_text(reply_token, text, mobile_url='', override_token=None):
 def get_line_message_content(message_id, override_token=None):
     token = get_line_token(override_token)
     url = f"{LINE_DATA_BASE}/message/{message_id}/content"
-    resp = requests.get(url, headers=line_headers(None, override_token=token), timeout=30)
-    if resp.status_code == 200:
-        return resp.content, resp.headers.get('Content-Type', 'image/jpeg')
+    status, content, hdrs = _http_request("GET", url, headers=line_headers(None, override_token=token), timeout=30)
+    if status == 200:
+        ctype = hdrs.get('Content-Type') or hdrs.get('content-type') or 'image/jpeg'
+        return content, ctype
     return None, None
 
 def create_default_rich_menu_image():
-    """動態繪製 1200x810 文青六宮格圖文選單預設圖片（當前端未傳入 Canvas 時的備援）"""
+    """使用純 Python 標準庫 (zlib + struct) 動態產生 1200x810 文青六宮格 PNG（零外部 C 套件依賴）"""
     width, height = 1200, 810
-    img = Image.new('RGB', (width, height), color=(246, 245, 240))
-    draw = ImageDraw.Draw(img)
+    bg = bytes((246, 245, 240))
+    ink = bytes((20, 20, 19))
 
-    # 雙重外框
-    draw.rectangle([10, 10, width - 10, height - 10], outline=(20, 20, 19), width=3)
-    draw.rectangle([16, 16, width - 16, height - 16], outline=(20, 20, 19), width=1)
+    col1, col2 = width // 3, (width // 3) * 2
+    row_mid = height // 2
 
-    # 六宮格格線
-    col_w = width // 3
-    row_h = height // 2
-    draw.line([(col_w, 16), (col_w, height - 16)], fill=(20, 20, 19), width=2)
-    draw.line([(col_w * 2, 16), (col_w * 2, height - 16)], fill=(20, 20, 19), width=2)
-    draw.line([(16, row_h), (width - 16, row_h)], fill=(20, 20, 19), width=2)
+    # 預先建構常用的橫列樣板以極速生成影像
+    blank_row = b'\x00' + bg * width
+    full_border_row = b'\x00' + (bg * 10) + (ink * (width - 20)) + (bg * 10)
 
-    out = BytesIO()
-    img.save(out, format='PNG')
-    return out.getvalue()
+    mid_arr = bytearray(b'\x00' + bg * width)
+    # 左右外框
+    for x in (10, 11, 12, 16, width - 17, width - 13, width - 12, width - 11):
+        offset = 1 + x * 3
+        mid_arr[offset:offset + 3] = ink
+    # 垂直六宮格分隔線
+    for x in (col1 - 1, col1, col2 - 1, col2):
+        offset = 1 + x * 3
+        mid_arr[offset:offset + 3] = ink
+    normal_grid_row = bytes(mid_arr)
+
+    rows = []
+    for y in range(height):
+        if y < 10 or y >= height - 10 or (13 <= y < 16) or (height - 16 <= y < height - 13):
+            rows.append(blank_row)
+        elif (10 <= y < 13) or (height - 13 <= y < height - 10) or y == 16 or y == height - 17 or (row_mid - 1 <= y <= row_mid):
+            rows.append(full_border_row)
+        else:
+            rows.append(normal_grid_row)
+
+    raw_data = b''.join(rows)
+
+    def make_chunk(chunk_type, data):
+        chunk = chunk_type + data
+        return struct.pack('>I', len(data)) + chunk + struct.pack('>I', zlib.crc32(chunk) & 0xffffffff)
+
+    ihdr = struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0)
+    compressed = zlib.compress(raw_data, level=6)
+    return (
+        b'\x89PNG\r\n\x1a\n' +
+        make_chunk(b'IHDR', ihdr) +
+        make_chunk(b'IDAT', compressed) +
+        make_chunk(b'IEND', b'')
+    )
 
 def setup_rich_menu_flow(mobile_web_url, custom_image_bytes=None, custom_mime="image/png", override_token=None):
     token = get_line_token(override_token)
@@ -81,17 +142,20 @@ def setup_rich_menu_flow(mobile_web_url, custom_image_bytes=None, custom_mime="i
 
     # 1. 清理舊的同名圖文選單，避免累積
     try:
-        r_list = requests.get(
+        st_list, content_list, _ = _http_request(
+            "GET",
             f"{LINE_API_BASE}/richmenu/list",
             headers=line_headers(override_token=token),
             timeout=10
         )
-        if r_list.status_code == 200:
-            for rm in r_list.json().get('richmenus', []):
+        if st_list == 200 and content_list:
+            data_list = json.loads(content_list.decode('utf-8'))
+            for rm in data_list.get('richmenus', []):
                 rm_name = rm.get('name', '')
                 rm_id = rm.get('richMenuId', '')
                 if rm_id and ('Minimalist_AI_Accounting' in rm_name or 'AI 記帳' in rm_name):
-                    requests.delete(
+                    _http_request(
+                        "DELETE",
                         f"{LINE_API_BASE}/richmenu/{rm_id}",
                         headers=line_headers(override_token=token),
                         timeout=10
@@ -163,16 +227,17 @@ def setup_rich_menu_flow(mobile_web_url, custom_image_bytes=None, custom_mime="i
         ]
     }
 
-    create_resp = requests.post(
+    st_create, body_create, _ = _http_request(
+        "POST",
         f"{LINE_API_BASE}/richmenu",
-        json=rich_menu_payload,
         headers=line_headers(override_token=token),
+        json_body=rich_menu_payload,
         timeout=15
     )
-    if create_resp.status_code != 200:
-        return {"ok": False, "error": f"建立 LINE Rich Menu 失敗: {create_resp.text}"}
+    if st_create != 200:
+        return {"ok": False, "error": f"建立 LINE Rich Menu 失敗: {body_create.decode('utf-8', errors='ignore')}"}
 
-    rich_menu_id = create_resp.json().get('richMenuId')
+    rich_menu_id = json.loads(body_create.decode('utf-8')).get('richMenuId')
 
     # 3. 上傳圖文選單圖片
     if custom_image_bytes:
@@ -182,23 +247,25 @@ def setup_rich_menu_flow(mobile_web_url, custom_image_bytes=None, custom_mime="i
         img_bytes = create_default_rich_menu_image()
         content_type = "image/png"
 
-    up_resp = requests.post(
+    st_up, body_up, _ = _http_request(
+        "POST",
         f"{LINE_DATA_BASE}/richmenu/{rich_menu_id}/content",
-        data=img_bytes,
         headers=line_headers(content_type, override_token=token),
+        raw_data=img_bytes,
         timeout=30
     )
-    if up_resp.status_code != 200:
-        return {"ok": False, "error": f"上傳 LINE Rich Menu 圖片失敗: {up_resp.text}"}
+    if st_up != 200:
+        return {"ok": False, "error": f"上傳 LINE Rich Menu 圖片失敗: {body_up.decode('utf-8', errors='ignore')}"}
 
     # 4. 設為全體使用者預設圖文選單
-    def_resp = requests.post(
+    st_def, body_def, _ = _http_request(
+        "POST",
         f"{LINE_API_BASE}/user/all/richmenu/{rich_menu_id}",
         headers=line_headers(override_token=token),
         timeout=15
     )
-    if def_resp.status_code != 200:
-        return {"ok": False, "error": f"設定預設 LINE Rich Menu 失敗: {def_resp.text}"}
+    if st_def != 200:
+        return {"ok": False, "error": f"設定預設 LINE Rich Menu 失敗: {body_def.decode('utf-8', errors='ignore')}"}
 
     return {
         "ok": True,

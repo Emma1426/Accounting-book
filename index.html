@@ -1011,6 +1011,11 @@
     // ============================================================================
     // 2. Google Sheets 雲端 API 通訊層
     // ============================================================================
+    function getFallbackConfigGasUrl() {
+      const cfg = window.ACCOUNTING_CLOUD_CONFIG || {};
+      return (cfg.DEFAULT_GAS_WEB_APP_URL || cfg.GAS_WEB_APP_URL || '').trim();
+    }
+
     async function callCloudBackend(action, payload = {}) {
       const gasUrl = getEffectiveGasUrl();
       const token = getEffectiveToken();
@@ -1025,20 +1030,48 @@
       }
 
       if (!gasUrl) {
-        throw new Error('尚未設定 Google Apps Script 網址');
+        throw new Error('尚未設定後端 API 或 Google Apps Script 網址');
       }
 
-      const resp = await fetch(gasUrl, {
-        method: 'POST',
-        redirect: 'follow',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({
-          dashboardAction: action,
-          token: token,
-          ...payload
-        })
+      const bodyStr = JSON.stringify({
+        dashboardAction: action,
+        token: token,
+        ...payload
       });
-      return await resp.json();
+
+      try {
+        const resp = await fetch(gasUrl, {
+          method: 'POST',
+          redirect: 'follow',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: bodyStr
+        });
+        const resJson = await resp.json();
+        if (resJson && resJson.ok !== false) return resJson;
+        const fallbackUrl = getFallbackConfigGasUrl();
+        if (fallbackUrl && fallbackUrl !== gasUrl) {
+          const fbResp = await fetch(fallbackUrl, {
+            method: 'POST',
+            redirect: 'follow',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: bodyStr
+          });
+          return await fbResp.json();
+        }
+        return resJson;
+      } catch (err) {
+        const fallbackUrl = getFallbackConfigGasUrl();
+        if (fallbackUrl && fallbackUrl !== gasUrl) {
+          const fbResp = await fetch(fallbackUrl, {
+            method: 'POST',
+            redirect: 'follow',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: bodyStr
+          });
+          return await fbResp.json();
+        }
+        throw err;
+      }
     }
 
     async function refreshAllData(silent = false) {
@@ -1069,11 +1102,14 @@
             if (token) url.searchParams.set('token', token);
             const resp = await fetch(url.toString(), { redirect: 'follow' });
             data = await resp.json();
+            if (!data || !data.ok) {
+              throw new Error((data && data.error) || 'Primary bootstrap failed');
+            }
           } catch (getErr) {
             data = await callCloudBackend('bootstrap', { yearMonth: selectedPeriod });
           }
         } else {
-          throw new Error('請在設定分頁填入 Google Apps Script 網址');
+          throw new Error('請在設定分頁填入後端 API 網址');
         }
 
         if (!data || !data.ok) {

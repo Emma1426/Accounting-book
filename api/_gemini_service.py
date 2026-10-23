@@ -1,16 +1,50 @@
 import os
+import sys
 import json
-import requests
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone, timedelta
-from api.sheets_service import (
-    DEFAULT_PARSE_MODEL,
-    DEFAULT_DIAGNOSIS_MODEL,
-    DEFAULT_SUBCATEGORY_TAXONOMY,
-    INCOME_CATEGORIES
-)
+
+_CUR_DIR = os.path.dirname(os.path.abspath(__file__))
+_ROOT_DIR = os.path.dirname(_CUR_DIR)
+for _p in (_CUR_DIR, _ROOT_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+try:
+    import requests
+except ImportError:
+    requests = None
+
+try:
+    from _sheets_service import (
+        DEFAULT_PARSE_MODEL,
+        DEFAULT_DIAGNOSIS_MODEL,
+        DEFAULT_SUBCATEGORY_TAXONOMY,
+        INCOME_CATEGORIES
+    )
+except ImportError:
+    from api._sheets_service import (
+        DEFAULT_PARSE_MODEL,
+        DEFAULT_DIAGNOSIS_MODEL,
+        DEFAULT_SUBCATEGORY_TAXONOMY,
+        INCOME_CATEGORIES
+    )
 
 GEMINI_INTERACTIONS_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/interactions'
 GEMINI_API_REVISION = '2026-05-20'
+
+def _post_json(url, payload, headers, timeout=55):
+    if requests is not None:
+        resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+        return resp.status_code, resp.text
+    data_bytes = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+    req = urllib.request.Request(url, data=data_bytes, headers=headers, method='POST')
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read().decode('utf-8', errors='replace')
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode('utf-8', errors='replace')
 
 def now_taipei():
     return datetime.now(timezone(timedelta(hours=8)))
@@ -59,9 +93,9 @@ def call_gemini_interactions_api(model, system_instruction, input_parts, schema=
     }
 
     try:
-        resp = requests.post(GEMINI_INTERACTIONS_ENDPOINT, json=req_body, headers=headers, timeout=55)
-        if 200 <= resp.status_code < 300:
-            parsed = resp.json()
+        status, text_body = _post_json(GEMINI_INTERACTIONS_ENDPOINT, req_body, headers, timeout=55)
+        if 200 <= status < 300:
+            parsed = json.loads(text_body)
             if isinstance(parsed.get('output_text'), str) and parsed['output_text'].strip():
                 return parsed['output_text'].strip()
             steps = parsed.get('steps', [])
@@ -102,11 +136,11 @@ def call_gemini_interactions_api(model, system_instruction, input_parts, schema=
         gen_config["responseSchema"] = schema
     gc_payload["generationConfig"] = gen_config
 
-    resp2 = requests.post(gen_url, json=gc_payload, headers={"Content-Type": "application/json"}, timeout=55)
-    if resp2.status_code < 200 or resp2.status_code >= 300:
-        raise RuntimeError(f"Gemini API HTTP {resp2.status_code}: {resp2.text[:300]}")
+    status2, text2 = _post_json(gen_url, gc_payload, {"Content-Type": "application/json"}, timeout=55)
+    if status2 < 200 or status2 >= 300:
+        raise RuntimeError(f"Gemini API HTTP {status2}: {text2[:300]}")
 
-    data2 = resp2.json()
+    data2 = json.loads(text2)
     try:
         text_out = data2['candidates'][0]['content']['parts'][0]['text']
         return text_out.strip()

@@ -3,9 +3,17 @@ import json
 import base64
 from io import BytesIO
 from datetime import datetime, timezone, timedelta
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
+
+try:
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaIoBaseUpload
+    _HAS_GOOGLE_LIBS = True
+except ImportError:
+    service_account = None
+    build = None
+    MediaIoBaseUpload = None
+    _HAS_GOOGLE_LIBS = False
 
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
@@ -21,6 +29,7 @@ SHEET_SETTINGS = 'Settings'
 DEFAULT_PARSE_MODEL = 'gemini-3.8-flash'
 DEFAULT_DIAGNOSIS_MODEL = 'gemini-4-argon'
 DEFAULT_GITHUB_PAGES_URL = 'https://emma1426.github.io/Accounting-book/'
+DEFAULT_FALLBACK_GAS_URL = 'https://script.google.com/macros/s/AKfycbw_mtxNkSJgeX25OG0daPgFQpRZsrV1EFENIuTui7WofCX2m0LBm7_g9etytA-qweJ0yg/exec'
 
 EXPENSE_CATEGORIES = [
     '餐飲食品', '交通通勤', '日常用品', '居家帳單', '休閒娛樂',
@@ -71,11 +80,17 @@ def get_spreadsheet_id():
 
 def get_env_credentials():
     """從環境變數 GOOGLE_SERVICE_ACCOUNT_JSON (字串或 base64) 建立憑證"""
+    if not _HAS_GOOGLE_LIBS or not service_account:
+        return None
     sa_json = os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON', '').strip()
     if not sa_json:
         local_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS', 'service_account.json')
         if os.path.exists(local_path):
-            return service_account.Credentials.from_service_account_file(local_path, scopes=SCOPES)
+            try:
+                return service_account.Credentials.from_service_account_file(local_path, scopes=SCOPES)
+            except Exception as e:
+                print(f"Error loading service account file: {e}")
+                return None
         return None
 
     try:
@@ -89,15 +104,19 @@ def get_env_credentials():
         print(f"Error parsing service account: {e}")
         return None
 
+def is_direct_sheets_configured():
+    """檢查是否已設定直連 Google Sheets 所需的 SPREADSHEET_ID 與 Service Account 憑證"""
+    return bool(get_spreadsheet_id() and get_env_credentials())
+
 def get_sheets_service():
     creds = get_env_credentials()
-    if not creds:
+    if not creds or not build:
         return None
     return build('sheets', 'v4', credentials=creds, cache_discovery=False)
 
 def get_drive_service():
     creds = get_env_credentials()
-    if not creds:
+    if not creds or not build:
         return None
     return build('drive', 'v3', credentials=creds, cache_discovery=False)
 
@@ -300,7 +319,7 @@ def upload_image_to_drive(image_bytes, mime_type, filename):
     """若設定有 DRIVE_FOLDER_ID 則上傳備份至 Google Drive"""
     drive = get_drive_service()
     folder_id = os.environ.get('DRIVE_FOLDER_ID', '').strip()
-    if not drive:
+    if not drive or not MediaIoBaseUpload:
         return '', ''
     try:
         file_metadata = {'name': filename}
