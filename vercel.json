@@ -1,7 +1,11 @@
 {
   "rewrites": [
+    { "source": "/config.js", "destination": "/api/index.py?_asset=config.js" },
+    { "source": "/web/config.js", "destination": "/api/index.py?_asset=config.js" },
+    { "source": "/manifest.json", "destination": "/api/index.py?_asset=manifest.json" },
+    { "source": "/web/manifest.json", "destination": "/api/index.py?_asset=manifest.json" },
     { "source": "/api", "destination": "/api/index.py" },
     { "source": "/api/(.*)", "destination": "/api/index.py" },
-    { "source": "/(.*)", "destination": "/api/index.py" }
+    { "source": "/(.*)", "destination": "/api/index.py?_asset=index.html" }
   ]
 }

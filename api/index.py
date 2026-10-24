@@ -1841,27 +1841,38 @@ class handler(BaseHTTPRequestHandler):
                 self._send_json(res)
                 return
 
+            asset_param = params.get('_asset', '')
+
             # 2. 靜態設定檔與 PWA Manifest 路由
-            if req_path.endswith('/config.js') or req_path == '/config.js':
+            if asset_param == 'config.js' or req_path.endswith('/config.js') or req_path == '/config.js':
                 asset = _read_static_asset('config.js')
                 if asset is not None:
                     self._send_raw(asset, content_type='application/javascript; charset=utf-8')
                     return
 
-            if req_path.endswith('/manifest.json') or req_path == '/manifest.json':
+            if asset_param == 'manifest.json' or req_path.endswith('/manifest.json') or req_path == '/manifest.json':
                 asset = _read_static_asset('manifest.json')
                 if asset is not None:
                     self._send_raw(asset, content_type='application/manifest+json; charset=utf-8')
                     return
 
-            # 3. 若不是直接呼叫 /api 端點，直接回傳完整前端網頁儀表板 (index.html)
-            if not req_path.startswith('/api'):
-                html_bytes = _read_static_asset('index.html')
-                if html_bytes is not None:
-                    self._send_raw(html_bytes, content_type='text/html; charset=utf-8')
-                    return
+            # 3. 若明確要求 JSON 健康檢查 (?format=json 或 ?health=1)
+            if params.get('format') == 'json' or params.get('health') == '1':
+                self._send_json({
+                    "ok": True,
+                    "status": "online",
+                    "mode": "direct_sheets" if is_direct_sheets_configured() else "gas_cloud_proxy",
+                    "message": "AI Accounting Serverless Backend is active"
+                })
+                return
 
-            # 4. /api 端點健康檢查
+            # 4. 預設回傳完整前端網頁儀表板 (index.html)
+            html_bytes = _read_static_asset('index.html')
+            if html_bytes is not None:
+                self._send_raw(html_bytes, content_type='text/html; charset=utf-8')
+                return
+
+            # 5. 備援健康檢查
             self._send_json({
                 "ok": True,
                 "status": "online",
