@@ -1778,6 +1778,22 @@ def handle_dashboard_action(action, params, request_host='', is_get=False):
     except Exception as err:
         return {"ok": False, "error": str(err)}
 
+def _read_static_asset(filename):
+    candidates = [
+        os.path.join(_ROOT_DIR, filename),
+        os.path.join(_ROOT_DIR, 'web', filename),
+        os.path.join(_CUR_DIR, f"_{filename}"),
+        os.path.join(_CUR_DIR, filename)
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            try:
+                with open(path, 'rb') as f:
+                    return f.read()
+            except Exception:
+                pass
+    return None
+
 # ============================================================================
 # Vercel Serverless HTTP Handler
 # ============================================================================
@@ -1787,19 +1803,22 @@ class handler(BaseHTTPRequestHandler):
         # 避免預設 stderr log 在部分環境引發 IO 例外
         return
 
-    def _send_json(self, data, status=200):
+    def _send_raw(self, body_bytes, content_type='text/html; charset=utf-8', status=200):
         try:
-            body = json.dumps(data, ensure_ascii=False).encode('utf-8')
             self.send_response(status)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Content-Type', content_type)
+            self.send_header('Content-Length', str(len(body_bytes)))
             self.send_header('Access-Control-Allow-Origin', '*')
             self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
             self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
             self.end_headers()
-            self.wfile.write(body)
+            self.wfile.write(body_bytes)
         except BaseException as e:
-            print(f"Response write warning: {e}")
+            print(f"Raw response write warning: {e}")
+
+    def _send_json(self, data, status=200):
+        body = json.dumps(data, ensure_ascii=False).encode('utf-8')
+        self._send_raw(body, content_type='application/json; charset=utf-8', status=status)
 
     def do_OPTIONS(self):
         try:
@@ -1810,16 +1829,39 @@ class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             parsed_url = urlparse(self.path)
+            req_path = parsed_url.path or '/'
             qs = parse_qs(parsed_url.query)
             params = {k: v[0] for k, v in qs.items()}
             action = params.get('action') or params.get('dashboardAction') or ''
             host = self.headers.get('Host', '')
 
+            # 1. 若帶有 API Action 參數，執行雲端帳務 API
             if action:
                 res = handle_dashboard_action(action, params, request_host=host, is_get=True)
                 self._send_json(res)
                 return
 
+            # 2. 靜態設定檔與 PWA Manifest 路由
+            if req_path.endswith('/config.js') or req_path == '/config.js':
+                asset = _read_static_asset('config.js')
+                if asset is not None:
+                    self._send_raw(asset, content_type='application/javascript; charset=utf-8')
+                    return
+
+            if req_path.endswith('/manifest.json') or req_path == '/manifest.json':
+                asset = _read_static_asset('manifest.json')
+                if asset is not None:
+                    self._send_raw(asset, content_type='application/manifest+json; charset=utf-8')
+                    return
+
+            # 3. 若不是直接呼叫 /api 端點，直接回傳完整前端網頁儀表板 (index.html)
+            if not req_path.startswith('/api'):
+                html_bytes = _read_static_asset('index.html')
+                if html_bytes is not None:
+                    self._send_raw(html_bytes, content_type='text/html; charset=utf-8')
+                    return
+
+            # 4. /api 端點健康檢查
             self._send_json({
                 "ok": True,
                 "status": "online",
